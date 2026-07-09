@@ -216,6 +216,15 @@ def create_tables():
 				UNIQUE(student_id, term_id)
 			);
 		""")
+		# Finished terms the user has cleared from the finished-terms view (for readability).
+		# The Term row and its history stay in student_terms; this only hides it from the list.
+		c.execute("""
+			CREATE TABLE IF NOT EXISTS dismissed_finished_terms (
+				term_id INTEGER PRIMARY KEY,
+				dismissed_at TEXT DEFAULT (datetime('now','localtime')),
+				FOREIGN KEY(term_id) REFERENCES student_terms(id) ON DELETE CASCADE
+			);
+		""")
 		# بلافاصله بعد از ساخت جدول notified_terms
 		c.execute("PRAGMA table_info(notified_terms)")
 		columns = [row[1] for row in c.fetchall()]

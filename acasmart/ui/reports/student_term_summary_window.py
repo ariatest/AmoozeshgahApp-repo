@@ -32,8 +32,19 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
         self.load_filter_options()
         self.set_default_dates()
         self.load_data(apply_filters=False)
+        self._wire_live_filters()
         self.showMaximized()
         self.table.setSortingEnabled(True)
+
+    def _wire_live_filters(self):
+        """فیلترِ زنده: هر تغییرِ ورودی بلافاصله اعمال می‌شود (بدون دکمهٔ «اعمال فیلتر»)."""
+        apply = lambda *_: self.load_data(apply_filters=True)
+        self.input_student.textChanged.connect(apply)
+        for combo in (self.combo_teacher, self.combo_instrument, self.combo_class,
+                      self.combo_day, self.combo_term_status):
+            combo.currentIndexChanged.connect(apply)
+        self.date_from.button.clicked.connect(apply)
+        self.date_to.button.clicked.connect(apply)
 
     def create_filter_box(self):
         group = QGroupBox("فیلترها")
@@ -64,10 +75,6 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
 
         self.combo_term_status = QComboBox()
         self.combo_term_status.addItems(["همه ترم‌ها", "فقط فعال", "فقط پایان یافته"])
-
-        self.btn_filter = QPushButton("اعمال فیلتر")
-        self.btn_filter.setProperty("variant", "primary")
-        self.btn_filter.clicked.connect(lambda: self.load_data(apply_filters=True))
 
         # Row 0: دانشجو | استاد | ساز | کلاس
         r0 = 0
@@ -102,7 +109,6 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
         self.btn_export.clicked.connect(self.export_to_excel)
 
         btn_row.addStretch(1)
-        btn_row.addWidget(self.btn_filter)
         btn_row.addWidget(self.btn_clear)
         btn_row.addWidget(self.btn_export)
 
@@ -121,7 +127,7 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
         for w in (
             self.input_student, self.combo_teacher, self.combo_instrument, self.combo_class,
             self.combo_day, self.date_from, self.date_to, self.combo_term_status,
-            self.btn_filter, self.btn_clear, self.btn_export
+            self.btn_clear, self.btn_export
         ):
             try:
                 ThemeManager.repolish(w)

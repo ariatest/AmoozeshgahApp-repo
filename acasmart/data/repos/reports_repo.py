@@ -15,8 +15,8 @@ def get_class_and_teacher_name(class_id):
         return c.fetchone() or ("—", "—")
 	
 def get_all_student_terms_with_financials():
-	from acasmart.data.repos.settings_repo import get_setting
 	from acasmart.data.repos.payments_repo import get_total_paid_for_term
+	from acasmart.data.repos.terms_repo import tuition_by_terms
 	with get_connection() as conn:
 		c = conn.cursor()
 		c.execute("""
@@ -29,8 +29,7 @@ def get_all_student_terms_with_financials():
 				c.id as class_id,
 				t.start_date,
 				t.end_date,
-				tr.name as teacher_name,
-				COALESCE(t.tuition_fee, 0) as term_fee
+				tr.name as teacher_name
 			FROM student_terms t
 			JOIN students s ON s.id = t.student_id
 			JOIN classes c   ON c.id = t.class_id
@@ -39,12 +38,13 @@ def get_all_student_terms_with_financials():
 		""")
 		terms = c.fetchall()
 
+		# شهریهٔ هر ترم با آبشارِ واحد (snapshot → profile → تنظیم) — بدون N+1
+		fee_map = tuition_by_terms([t[0] for t in terms])
 		result = []
 		for (term_id, student_name, national_code, class_name, instrument,
-			 class_id, start_date, end_date, teacher_name, term_fee) in terms:
+			 class_id, start_date, end_date, teacher_name) in terms:
 
-			if not term_fee:
-				term_fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))  # fallback
+			term_fee = fee_map.get(term_id)
 
 			paid_tuition = get_total_paid_for_term(term_id, 'tuition')
 			paid_extra   = get_total_paid_for_term(term_id, 'extra')
@@ -195,10 +195,21 @@ def get_student_term_summary_rows(student_name='', teacher_name='', class_name='
 	cursor.execute(query, params)
 	terms = cursor.fetchall()
 
-	# گرفتن تنظیم سقف جلسات ترم
-	cursor.execute("SELECT value FROM settings WHERE key = 'term_session_count'")
-	row = cursor.fetchone()
-	session_limit = int(row[0]) if row else 12
+	# مصرف‌شده (حاضر+غایب) هر ترم — قاعده در terms_repo متمرکز است (بدون N+1)
+	from acasmart.data.repos.terms_repo import consumed_by_terms
+	term_ids = [t[0] for t in terms]
+	consumed_map = consumed_by_terms(term_ids)
+
+	# حاضرها (سنجهٔ جدا از مصرف‌شده) — یک کوئریِ گروهی
+	present_map = {}
+	if term_ids:
+		ph = ",".join("?" * len(term_ids))
+		cursor.execute(f"""
+			SELECT term_id, COUNT(*) FROM attendance
+			WHERE term_id IN ({ph}) AND status = 'present'
+			GROUP BY term_id
+		""", term_ids)
+		present_map = {r[0]: r[1] for r in cursor.fetchall()}
 
 	result = []
 	for term in terms:
@@ -208,16 +219,8 @@ def get_student_term_summary_rows(student_name='', teacher_name='', class_name='
 			start_date, end_date
 		) = term
 
-		# شمارش جلسات
-		cursor.execute("""
-			SELECT SUM(CASE WHEN status != 'canceled' THEN 1 ELSE 0 END),
-				   SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END)
-			FROM attendance
-			WHERE term_id = ?
-		""", (term_id,))
-		session_row = cursor.fetchone()
-		total_sessions = session_row[0] or 0   # مصرف‌شده = حاضر + غایب (بدون لغوشده)
-		present_sessions = session_row[1] or 0
+		total_sessions = consumed_map.get(term_id, 0)   # مصرف‌شده = حاضر + غایب (بدون لغوشده)
+		present_sessions = present_map.get(term_id, 0)
 		absent_sessions = total_sessions - present_sessions
 
 		result.append([

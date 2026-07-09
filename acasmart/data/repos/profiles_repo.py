@@ -55,31 +55,6 @@ def set_term_config(term_id: int, sessions_limit: int, tuition_fee: int, currenc
 		conn.commit()
 
 
-def get_term_config(term_id: int):
-	with get_connection() as conn:
-		c = conn.cursor()
-		c.execute("""
-			SELECT sessions_limit, tuition_fee, currency_unit
-			FROM student_terms
-			WHERE id=?
-		""", (term_id,))
-		row = c.fetchone()
-		if row:
-			sl, fee, unit = row
-			if sl is None:
-				sl = int(get_setting("term_session_count", 12))
-			if fee is None:
-				fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
-			if not unit:
-				unit = get_setting("currency_unit", "toman")
-			return {"sessions_limit": sl, "tuition_fee": fee, "currency_unit": unit}
-		return {
-			"sessions_limit": int(get_setting("term_session_count", 12)),
-			"tuition_fee": int(get_setting("term_fee", get_setting("term_tuition", 6000000))),
-			"currency_unit": get_setting("currency_unit", "toman"),
-		}
-
-
 def get_pricing_profile_by_id(profile_id: int):
 	"""برگرداندن پروفایل بر اساس id (None اگر نبود)."""
 	with get_connection() as conn:
@@ -117,38 +92,6 @@ def apply_profile_to_term(term_id: int, profile_id: int):
 		profile_id=prof["id"],
 	)
 	return True
-
-
-def get_term_config_full(term_id: int):
-	"""
-	کانفیگ کامل ترم + اطلاعات پروفایل (اگر داشته باشد).
-	"""
-	with get_connection() as conn:
-		c = conn.cursor()
-		c.execute("""
-			SELECT st.sessions_limit, st.tuition_fee, st.currency_unit, st.profile_id,
-				   pp.name
-			FROM student_terms st
-			LEFT JOIN pricing_profiles pp ON pp.id = st.profile_id
-			WHERE st.id = ?
-		""", (term_id,))
-		row = c.fetchone()
-		if not row:
-			return None
-		sl, fee, unit, pid, pname = row
-		if sl is None:
-			sl = int(get_setting("term_session_count", 12))
-		if fee is None:
-			fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
-		if not unit:
-			unit = get_setting("currency_unit", "toman")
-		return {
-			"sessions_limit": sl,
-			"tuition_fee": fee,
-			"currency_unit": unit,
-			"profile_id": pid,
-			"profile_name": pname,
-		}
 
 
 def set_default_pricing_profile(profile_id: int):

@@ -48,10 +48,6 @@ class AttendanceReportWindow(BaseSecondaryWindow):
         self.combo_term_status.addItem("فقط فعال", "active")
         self.combo_term_status.addItem("فقط پایان‌یافته", "finished")
 
-        btn_filter = QPushButton("اعمال فیلتر")
-        btn_filter.setProperty("variant", "primary")
-        btn_filter.clicked.connect(self.apply_filters)
-
         btn_clear = QPushButton("پاکسازی فیلتر")
         btn_clear.setProperty("variant", "secondary")
         btn_clear.clicked.connect(self.reset_filters)
@@ -64,7 +60,6 @@ class AttendanceReportWindow(BaseSecondaryWindow):
         filter_layout.addWidget(self.combo_teacher)
         filter_layout.addWidget(self.combo_class)
         filter_layout.addWidget(self.combo_term_status)
-        filter_layout.addWidget(btn_filter)
         filter_layout.addWidget(btn_clear)
         filter_layout.addWidget(btn_export)
 
@@ -91,7 +86,7 @@ class AttendanceReportWindow(BaseSecondaryWindow):
         for w in (
             title,
             self.input_student_name, self.combo_teacher, self.combo_class, self.combo_term_status,
-            btn_filter, btn_clear, btn_export,
+            btn_clear, btn_export,
             self.date_from_picker, self.date_to_picker, self.table, self.status_label,
         ):
             try:
@@ -99,7 +94,17 @@ class AttendanceReportWindow(BaseSecondaryWindow):
             except Exception:
                 pass
         self.load_data()
+        self._wire_live_filters()
         self.table.setSortingEnabled(True)
+
+    def _wire_live_filters(self):
+        """فیلترِ زنده: هر تغییرِ ورودی بلافاصله apply_filters را صدا می‌زند (بدون دکمهٔ «اعمال فیلتر»)."""
+        apply = lambda *_: self.apply_filters()
+        self.input_student_name.textChanged.connect(apply)
+        for combo in (self.combo_teacher, self.combo_class, self.combo_term_status):
+            combo.currentIndexChanged.connect(apply)
+        self.date_from_picker.button.clicked.connect(apply)
+        self.date_to_picker.button.clicked.connect(apply)
 
     def load_data(self):
         rows = get_attendance_report_rows()
@@ -151,9 +156,6 @@ class AttendanceReportWindow(BaseSecondaryWindow):
                 continue
 
             filtered.append(row)
-
-        if not filtered:
-            QMessageBox.information(self, "بدون نتیجه", "هیچ رکوردی مطابق با فیلترهای انتخاب‌شده یافت نشد.")
 
         self.populate_table(filtered)
         self.status_label.setText(f"تعداد نتایج: {len(filtered)}")

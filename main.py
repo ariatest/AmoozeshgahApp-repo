@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from acasmart.paths import APP_DATA_DIR, DB_PATH, resource_path
-from dotenv import load_dotenv
+from acasmart.core import config
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from acasmart.core.app_init import initialize_database
@@ -15,11 +15,7 @@ from PySide6.QtCore import Qt, QObject
 from acasmart.ui.widgets.theme_manager import ThemeManager, apply_theme_icon
 
 # ---------- Environment ----------
-env_path = resource_path(".env")
-if env_path.exists():
-    load_dotenv(env_path)
-else:
-    load_dotenv()
+config.load()  # load .env once (path-aware); accessors also lazy-load on first use
 
 def _ensure_logging():
     root = logging.getLogger()

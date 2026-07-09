@@ -6,8 +6,8 @@ import sqlite3
 import shutil
 import stat
 import logging
-from dotenv import load_dotenv
 
+from acasmart.core import config
 from acasmart.core.utils import hash_password
 from acasmart.paths import DB_PATH, APP_DATA_DIR, resource_path
 
@@ -35,9 +35,8 @@ def initialize_database():
     # ۳) حالا که جداول تضمین شدند، سراغ تنظیمات برو
     ensure_bool_setting("sms_enabled", default=True) 
     # ۴) بارگذاری متغیرهای محیطی
-    load_dotenv()  # اگر لازم بود، بعداً می‌تونی نسخهٔ چند-مسیره‌اش رو جایگزین کنی
-    admin_mobile = (os.getenv("ADMIN_MOBILE") or "").strip()
-    admin_password = (os.getenv("ADMIN_PASSWORD") or "").strip()
+    admin_mobile = config.admin_mobile()
+    admin_password = config.admin_password()
 
     # الف) ارور شفاف اگر پسورد تعیین نشده/خالی است
     if not admin_password:

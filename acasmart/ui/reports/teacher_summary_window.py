@@ -41,6 +41,9 @@ class TeacherSummaryWindow(BaseSecondaryWindow):
                 pass
         self.load_filter_options()
         self.load_data()
+        # فیلترِ زنده: با تغییرِ کمبوها بلافاصله اعمال می‌شود (بدون دکمهٔ «اعمال فیلتر»)
+        self.combo_teacher.currentIndexChanged.connect(lambda: self.load_data(apply_filters=True))
+        self.combo_day.currentIndexChanged.connect(lambda: self.load_data(apply_filters=True))
         self.showMaximized()
         self.table.setSortingEnabled(True)
 
@@ -54,10 +57,6 @@ class TeacherSummaryWindow(BaseSecondaryWindow):
         self.combo_day.addItem("همه", None)
         self.combo_day.addItems(["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنج‌شنبه", "جمعه"])
 
-        btn_filter = QPushButton("اعمال فیلتر")
-        btn_filter.setProperty("variant", "primary")
-        btn_filter.clicked.connect(lambda: self.load_data(apply_filters=True))
-
         btn_clear = QPushButton("🧹 پاکسازی فیلترها")
         btn_clear.setProperty("variant", "secondary")
         btn_clear.clicked.connect(self.clear_filters)
@@ -66,7 +65,7 @@ class TeacherSummaryWindow(BaseSecondaryWindow):
         export_btn.setProperty("variant", "ghost")
         export_btn.clicked.connect(self.export_to_excel)
 
-        for widget in [self.combo_teacher, self.combo_day, btn_filter, btn_clear, export_btn]:
+        for widget in [self.combo_teacher, self.combo_day, btn_clear, export_btn]:
             widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
         layout.addWidget(QLabel("👨‍🏫 استاد:"))
@@ -75,14 +74,12 @@ class TeacherSummaryWindow(BaseSecondaryWindow):
         layout.addWidget(QLabel("🗓️ روز تدریس:"))
         layout.addWidget(self.combo_day)
         layout.addSpacing(10)
-        layout.addWidget(btn_filter)
-        layout.addSpacing(10)
         layout.addWidget(btn_clear)
         layout.addStretch()
         layout.addWidget(export_btn)
 
         # Apply QSS to filter widgets
-        for w in (self.combo_teacher, self.combo_day, btn_filter, btn_clear, export_btn):
+        for w in (self.combo_teacher, self.combo_day, btn_clear, export_btn):
             try:
                 ThemeManager.repolish(w)
             except Exception:

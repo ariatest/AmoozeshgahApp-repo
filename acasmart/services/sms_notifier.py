@@ -1,7 +1,7 @@
 from acasmart.data.repos.settings_repo import get_setting_bool
 import requests
-from dotenv import load_dotenv
 import os
+from acasmart.core import config
 from acasmart.paths import APP_DATA_DIR
 from enum import Enum
 class SmsStatus(Enum):
@@ -11,11 +11,10 @@ class SmsStatus(Enum):
 
 class SmsNotifier:
     def __init__(self):
-        # بارگذاری متغیرها از فایل .env
-        load_dotenv()
-        self.api_key = os.getenv("IPPANEL_API_KEY")
-        self.from_number = os.getenv("IPPANEL_FROM_NUMBER")
-        self.pattern_code = os.getenv("IPPANEL_PATTERN_CODE")
+        # اطلاعاتِ IPPanel از تنظیماتِ متمرکز (config خودش .env را یک‌بار بار می‌کند)
+        self.api_key = config.ippanel_api_key()
+        self.from_number = config.ippanel_from_number()
+        self.pattern_code = config.ippanel_pattern_code()
         self.api_url = "https://edge.ippanel.com/v1/api/send"
         
         # مسیر مطمئن برای ذخیره لاگ (همان مسیر main.py)

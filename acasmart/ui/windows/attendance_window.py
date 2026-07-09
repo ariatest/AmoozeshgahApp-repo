@@ -1,27 +1,19 @@
 from __future__ import annotations
 
 from acasmart.data.repos.attendance_repo import (
-    count_attendance,
     fetch_attendance_status_by_date,
-    insert_attendance_with_date,
-    count_attendance_by_term,
     delete_attendance,
-    count_present_attendance_for_term,
 )
 from acasmart.data.repos.settings_repo import get_setting_bool
-from acasmart.data.repos.terms_repo import get_term_dates, recalc_term_end_by_id
-from acasmart.data.repos.sessions_repo import (
+from acasmart.data.repos.terms_repo import get_term_dates, refresh_completion, term_progress
+from acasmart.data.repos.enrollment_repo import (
     fetch_scheduled_students_for_class_on_date,
 )
 from acasmart.data.repos.classes_repo import fetch_classes_on_weekday
-from acasmart.data.repos.notifications_repo import (
-    has_renew_sms_been_sent,
-    mark_renew_sms_sent,
-    clear_renew_sms_sent,
-)
-from acasmart.data.repos.reports_repo import get_class_and_teacher_name
-from acasmart.data.repos.profiles_repo import get_term_config
 from acasmart.data.repos.students_repo import get_student_contact
+from acasmart.services import renewal_reminder
+from acasmart.services.renewal_reminder import RenewalOutcome
+from acasmart.services.attendance_recording import record_attendance
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -34,7 +26,6 @@ import sqlite3
 import jdatetime
 
 from acasmart.ui.widgets.shamsi_date_popup import ShamsiDatePopup
-from acasmart.services.sms_notifier import SmsNotifier, SmsStatus
 
 from acasmart.ui.widgets.theme_manager import ThemeManager
 from acasmart.ui.widgets.base_secondary_window import BaseSecondaryWindow
@@ -47,7 +38,6 @@ class AttendanceManager(BaseSecondaryWindow):
         self.selected_class_id = None
         self.last_selected_date = jdatetime.date.today().isoformat()  # "1403-02-31"
 
-        self.notifier = SmsNotifier()
         # Model-B: دیگر رکوردِ جلسه‌ای ساخته نمی‌شود؛ پاک‌سازیِ جلساتِ منقضی لازم نیست.
 
 
@@ -199,12 +189,14 @@ class AttendanceManager(BaseSecondaryWindow):
             self.selected_class_id, selected_date, include_completed=show_completed
         )
         for sid, name, teacher, session_time, term_id in rows:
-            cfg = get_term_config(term_id)
-            term_limit = int(cfg.get("sessions_limit") or 12)
+            progress = term_progress(term_id)
+            if progress is None:
+                continue
+            term_limit = progress.limit
             notify_session_number = max(0, term_limit - 1)
 
             # شمارش کل ثبت‌ها برای همان ترم (حاضر + غایب)
-            done_total = count_attendance_by_term(sid, self.selected_class_id, term_id)
+            done_total = progress.consumed
 
             # وضعیت امروز: None (ثبت‌نشده) / 'present' / 'absent' / 'canceled'
             record_status = fetch_attendance_status_by_date(sid, self.selected_class_id, selected_date, term_id)
@@ -229,7 +221,7 @@ class AttendanceManager(BaseSecondaryWindow):
             tooltip = f"جلسات ثبت‌شده (کل): {done_total} از {term_limit} — باقی‌مانده: {max(0, term_limit - done_total)}"
 
             # وضعیت SMS برای نمایش آیکون/ایموجی کنار نام و tooltip
-            sent_flag = has_renew_sms_been_sent(sid, term_id)
+            sent_flag = renewal_reminder.already_sent(term_id, sid)
             sms_enabled = get_setting_bool("sms_enabled", True)
             if sent_flag:
                 display_name += "  ✅"
@@ -347,42 +339,15 @@ class AttendanceManager(BaseSecondaryWindow):
 
     # ------------------- RENEWAL SMS -------------------
 
-    def _send_renewal_sms(self, sid: int, term_id: int):
-        """ارسال پیامک یادآوری تمدید.
-
-        فلگ «ارسال‌شده» فقط در صورت موفقیت قطعی (SmsStatus.SENT) ثبت می‌شود؛
-        حالت‌های غیرفعال/ناموفق/خطا قابلِ ارسال مجدد باقی می‌مانند.
-        خروجی: SmsStatus یا None (نبودِ شماره یا خطای ارتباطی).
-        """
-        name, phone = get_student_contact(sid)
-        if not phone:
-            return None
-        class_name, _ = get_class_and_teacher_name(self.selected_class_id)
-        try:
-            result = self.notifier.send_renew_term_notification(name, phone, class_name)
-        except Exception as e:
-            print(f"[ERROR] SMS failed for sid={sid}, term_id={term_id}: {e}")
-            return None
-        status = result.get("status") if isinstance(result, dict) else None
-        if status == SmsStatus.SENT:
-            mark_renew_sms_sent(sid, term_id)
-            print(f"[INFO] SMS sent for sid={sid}, term_id={term_id}")
-        elif status == SmsStatus.DISABLED:
-            print(f"[INFO] SMS disabled for sid={sid}, term_id={term_id}")
-        else:
-            print(f"[WARN] SMS not sent (status={status}) for sid={sid}, term_id={term_id}")
-        return status
-
     def resend_renewal_sms(self, sid: int, term_id: int):
-        """ارسال مجدد دستیِ پیامک یادآوری تمدید توسط کاربر."""
-        # اگر قبلاً (احتمالاً به‌اشتباهِ باگ قدیمی) ارسال‌شده علامت خورده،
-        # ابتدا فلگ را پاک کن تا ارسال مجدد واقعاً انجام شود.
-        clear_renew_sms_sent(sid, term_id)
-        status = self._send_renewal_sms(sid, term_id)
-        if status == SmsStatus.SENT:
+        """ارسال مجدد دستیِ پیامک یادآوری تمدید توسط کاربر (سیاست در ماژولِ renewal_reminder)."""
+        outcome = renewal_reminder.force_resend(term_id, sid, self.selected_class_id)
+        if outcome == RenewalOutcome.SENT:
             QMessageBox.information(self, "موفق", "پیامک یادآوری تمدید ارسال شد.")
-        elif status == SmsStatus.DISABLED:
+        elif outcome == RenewalOutcome.DISABLED:
             QMessageBox.warning(self, "غیرفعال", "ارسال پیامک در تنظیمات غیرفعال است.")
+        elif outcome == RenewalOutcome.NO_PHONE:
+            QMessageBox.warning(self, "بدون شماره", "برای این هنرجو شماره‌ای ثبت نشده است.")
         else:
             QMessageBox.warning(
                 self, "خطای پیامک",
@@ -430,32 +395,17 @@ class AttendanceManager(BaseSecondaryWindow):
                 if selected_date < start_date or (end_date and selected_date > end_date):
                     continue
 
-                # سقفِ همان ترم
-                cfg = get_term_config(term_id)
-                term_limit = int(cfg.get("sessions_limit") or 12)
-                notify_session_number = max(0, term_limit - 1)
-
                 # فقط اگر یکی از چک‌باکس‌ها زده شده باشد ثبت کن
                 if present or absent:
                     any_saved = True   # ✅ الان می‌دونیم حداقل یک ردیف ذخیره شد
                     status = "present" if present else "absent"
 
-                    # --- ثبت واقعی رکورد امروز ---
-                    ended = insert_attendance_with_date(
-                        sid, self.selected_class_id, term_id, selected_date, status
-                    )
-
-                    # شمارش بعد از ثبت (کل: حاضر+غایب)
-                    total_after = count_attendance_by_term(sid, self.selected_class_id, term_id)
-
-                    # اگر حالا «دقیقاً یک جلسه مانده» → SMS (و نه جلسه بعدی)
-                    if (total_after == notify_session_number) and (not has_renew_sms_been_sent(sid, term_id)):
-                        status = self._send_renewal_sms(sid, term_id)
-                        # فقط وقتی ارسال فعال بوده ولی موفق نشد، به کاربر گزارش بده؛
-                        # حالت غیرفعال (DISABLED) خطا نیست و قابل ارسال مجدد می‌ماند.
-                        if status not in (SmsStatus.SENT, SmsStatus.DISABLED):
-                            name, _ = get_student_contact(sid)
-                            failed_sms.append(name)
+                    # ثبت رکورد امروز + اثرهای پیرو (تکمیلِ ترم و یادآوریِ تمدید) در یک فراخوانی
+                    result = record_attendance(term_id, sid, self.selected_class_id, selected_date, status)
+                    # فقط شکستِ واقعیِ پیامک گزارش می‌شود؛ NOT_DUE/ALREADY_SENT/SENT/DISABLED خطا نیستند.
+                    if result.reminder in (RenewalOutcome.FAILED, RenewalOutcome.NO_PHONE):
+                        name, _ = get_student_contact(sid)
+                        failed_sms.append(name)
 
                     # Model-B: ترم که کامل شد، جلسات آینده محاسبه‌ای‌اند و چیزی برای حذف نیست.
 
@@ -493,7 +443,7 @@ class AttendanceManager(BaseSecondaryWindow):
             return
         reason = (reason or "").strip() or None
         try:
-            insert_attendance_with_date(student_id, class_id, term_id, date_value, "canceled", reason)
+            record_attendance(term_id, student_id, class_id, date_value, "canceled", cancel_reason=reason)
         except Exception as e:
             QMessageBox.warning(self, "خطا", f"ثبت لغو جلسه با خطا مواجه شد:\n{e}")
             return
@@ -507,7 +457,7 @@ class AttendanceManager(BaseSecondaryWindow):
 
             # اگر با حذف، مجموع از limit کمتر شد و end_date قبلاً ست بود → بازش کن
             try:
-                recalc_term_end_by_id(term_id)
+                refresh_completion(term_id)
             except Exception:
                 pass
 
