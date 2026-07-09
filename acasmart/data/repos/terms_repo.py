@@ -89,6 +89,48 @@ def delete_student_term_by_id(term_id):
 		conn.commit()
 
 
+def update_term_schedule(term_id, new_start_time, new_duration=None):
+	"""Model-B: change an existing enrollment's weekly time (and optionally lesson duration).
+
+	Only the time-of-day changes — the weekday and start_date are untouched (the class
+	day is unchanged), so the computed weekly occurrences simply shift to the new time.
+	Re-runs interval-aware teacher/student conflict detection, excluding this term itself.
+
+	Returns:
+		True                on success,
+		'notfound'          if the term does not exist,
+		'teacher_conflict'  if the new slot overlaps the teacher's weekly schedule,
+		'student_conflict'  if it overlaps the student's own weekly schedule.
+	"""
+	from acasmart.data.repos.sessions_repo import (
+		has_teacher_schedule_conflict, has_student_schedule_conflict,
+	)  # local import to avoid cycles
+	with get_connection() as conn:
+		c = conn.cursor()
+		row = c.execute(
+			"SELECT student_id, class_id, COALESCE(lesson_duration, 30) FROM student_terms WHERE id=?",
+			(term_id,),
+		).fetchone()
+		if not row:
+			return 'notfound'
+		student_id, class_id, cur_dur = row
+		eff_dur = int(new_duration) if new_duration else int(cur_dur or 30)
+
+		if has_teacher_schedule_conflict(class_id, new_start_time, new_duration=eff_dur, exclude_term_id=term_id):
+			return 'teacher_conflict'
+		if has_student_schedule_conflict(student_id, class_id, new_start_time, new_duration=eff_dur, exclude_term_id=term_id):
+			return 'student_conflict'
+
+		c.execute(
+			"""UPDATE student_terms
+			      SET start_time = ?, lesson_duration = ?, updated_at = datetime('now','localtime')
+			    WHERE id = ?""",
+			(new_start_time, eff_dur, term_id),
+		)
+		conn.commit()
+		return True
+
+
 def get_student_term(student_id, class_id):
 	with get_connection() as conn:
 		c = conn.cursor()

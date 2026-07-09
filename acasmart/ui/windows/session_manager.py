@@ -7,7 +7,7 @@ from acasmart.data.repos.profiles_repo import list_pricing_profiles
 from acasmart.data.repos.sessions_repo import enroll_student, fetch_enrollments_for_class
 from acasmart.data.repos.settings_repo import get_setting
 from acasmart.data.repos.students_repo import fetch_students_with_teachers
-from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student
+from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student, update_term_schedule
 from acasmart.core.schedule import first_on_or_after
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QListWidget, QListWidgetItem,
@@ -158,6 +158,90 @@ class TermConfigDialog(QDialog):
                     "profile_id": None, "lesson_duration": duration}
 
 
+class EditEnrollmentDialog(QDialog):
+    """ویرایش ساعت/مدت یک ثبت‌نام موجود (بدون حذف و ثبت دوباره).
+
+    خروجی از طریق exec_(): result() یکی از 'save' یا 'delete' است؛ در حالت save
+    مقادیر new_time (HH:mm) و new_duration در دسترس‌اند.
+    """
+    SAVE = 1
+    DELETE = 2
+
+    def __init__(self, parent, student_name, class_start_time, current_time, current_duration):
+        super().__init__(parent)
+        self.setWindowTitle("ویرایش ثبت‌نام")
+        self.action = None
+        self.new_time = None
+        self.new_duration = None
+        self._class_start_time = class_start_time
+
+        lay = QVBoxLayout(self)
+        lbl = QLabel(f"هنرجو: {student_name}")
+        lbl.setProperty("sectionTitle", True)
+        lay.addWidget(lbl)
+
+        row_t = QHBoxLayout()
+        row_t.addWidget(QLabel("ساعت جلسه:"))
+        self.time_edit = QTimeEdit()
+        self.time_edit.setDisplayFormat("HH:mm")
+        try:
+            self.time_edit.setTime(QTime.fromString(str(current_time), "HH:mm"))
+        except Exception:
+            self.time_edit.setTime(QTime(12, 0))
+        row_t.addWidget(self.time_edit)
+        lay.addLayout(row_t)
+
+        row_d = QHBoxLayout()
+        row_d.addWidget(QLabel("مدت هر جلسه:"))
+        self.combo_duration = QComboBox()
+        self.combo_duration.addItem("۳۰ دقیقه", 30)
+        self.combo_duration.addItem("۶۰ دقیقه (یک‌ساعته)", 60)
+        self.combo_duration.setCurrentIndex(1 if int(current_duration or 30) >= 60 else 0)
+        row_d.addWidget(self.combo_duration)
+        lay.addLayout(row_d)
+
+        btns = QHBoxLayout()
+        self.btn_save = QPushButton("💾 ذخیرهٔ تغییرات")
+        self.btn_save.setProperty("variant", "primary")
+        self.btn_save.clicked.connect(self._on_save)
+        self.btn_delete = QPushButton("🗑 حذف ثبت‌نام")
+        self.btn_delete.setProperty("variant", "secondary")
+        self.btn_delete.clicked.connect(self._on_delete)
+        self.btn_cancel = QPushButton("انصراف")
+        self.btn_cancel.setProperty("variant", "ghost")
+        self.btn_cancel.clicked.connect(self.reject)
+        btns.addWidget(self.btn_save)
+        btns.addWidget(self.btn_delete)
+        btns.addWidget(self.btn_cancel)
+        lay.addLayout(btns)
+
+        for w in (self.btn_save, self.btn_delete, self.btn_cancel):
+            try:
+                ThemeManager.repolish(w)
+            except Exception:
+                pass
+
+    def _on_save(self):
+        new_time = self.time_edit.time().toString("HH:mm")
+        # ساعت جلسه نباید قبل از شروع کلاس باشد (هماهنگ با منطق ثبت‌نام)
+        if self._class_start_time:
+            try:
+                if self.time_edit.time() < QTime.fromString(self._class_start_time, "HH:mm"):
+                    QMessageBox.warning(self, "خطا",
+                        "ساعت جلسه نمی‌تواند قبل از شروع کلاس باشد.")
+                    return
+            except Exception:
+                pass
+        self.action = self.SAVE
+        self.new_time = new_time
+        self.new_duration = int(self.combo_duration.currentData())
+        self.accept()
+
+    def _on_delete(self):
+        self.action = self.DELETE
+        self.accept()
+
+
 class SessionManager(BaseSecondaryWindow):
     def __init__(self, return_target: QWidget | None = None):
         super().__init__("مدیریت ثبت‌نام هنرجویان", return_target)
@@ -247,12 +331,12 @@ class SessionManager(BaseSecondaryWindow):
         layout.addWidget(self.btn_notify_expired)
 
         # Enrollments list (Model-B: ثبت‌نام‌های فعال این کلاس)
-        lbl_sessions = QLabel("ثبت‌نام‌های این کلاس (برای حذف دوبار کلیک کنید):")
+        lbl_sessions = QLabel("ثبت‌نام‌های این کلاس (برای ویرایش/حذف دوبار کلیک کنید):")
         lbl_sessions.setProperty("sectionTitle", True)
         layout.addWidget(lbl_sessions)
         self.list_sessions = QListWidget()
         self.list_sessions.setSortingEnabled(False) # Qt خودش با متن سورت نکند
-        self.list_sessions.itemDoubleClicked.connect(self.delete_session_from_class)
+        self.list_sessions.itemDoubleClicked.connect(self.edit_or_delete_session)
         layout.addWidget(self.list_sessions)
 
         # Apply theme/QSS to new widgets
@@ -474,28 +558,60 @@ class SessionManager(BaseSecondaryWindow):
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, term_id)
             item.setData(Qt.UserRole + 1, student_id)
+            item.setData(Qt.UserRole + 2, start_time)
+            item.setData(Qt.UserRole + 3, int(dur or 30))
+            item.setData(Qt.UserRole + 4, name)
             self.list_sessions.addItem(item)
 
-    def delete_session_from_class(self, item):
-        """Model-B: حذف ثبت‌نام (ترم) — فقط اگر سابقه (پرداخت/حضور) نداشته باشد."""
+    def edit_or_delete_session(self, item):
+        """Model-B: دوبار کلیک روی یک ثبت‌نام → دیالوگ ویرایشِ ساعت/مدت یا حذف.
+
+        ویرایش ساعت روی همان ترم انجام می‌شود (بدون حذف و ثبت دوباره)، پس سابقهٔ
+        پرداخت/حضور حفظ می‌شود. حذف مثل قبل فقط برای ترمِ بدون سابقه مجاز است.
+        """
         term_id = item.data(Qt.UserRole)
         student_id = item.data(Qt.UserRole + 1)
+        cur_time = item.data(Qt.UserRole + 2)
+        cur_dur = item.data(Qt.UserRole + 3)
+        name = item.data(Qt.UserRole + 4)
         if term_id is None or student_id is None:
             return
 
-        reply = QMessageBox.question(self, "حذف ثبت‌نام", "آیا این ثبت‌نام (ترم) حذف شود؟",
-                                     QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes:
+        _class_day, class_start_time = get_day_and_time_for_class(self.selected_class_id)
+        dlg = EditEnrollmentDialog(self, name, class_start_time, cur_time, cur_dur)
+        if dlg.exec_() != QDialog.Accepted:
             return
 
-        has_history = not delete_term_if_no_history(student_id, self.selected_class_id, term_id)
-        if has_history:
-            QMessageBox.warning(self, "حذف ممکن نیست",
-                                "برای ترم این هنرجو سابقه (پرداخت یا حضور و غیاب) ثبت شده است. "
-                                "ترمی که سابقه دارد حذف نمی‌شود؛ در صورت نیاز آن را ویرایش کنید.")
+        if dlg.action == EditEnrollmentDialog.SAVE:
+            result = update_term_schedule(term_id, dlg.new_time, dlg.new_duration)
+            if result is True:
+                QMessageBox.information(self, "موفق", f"ساعت ثبت‌نام به {dlg.new_time} تغییر کرد.")
+            elif result == 'teacher_conflict':
+                QMessageBox.warning(self, "تداخل زمانی",
+                    "این ساعت با برنامهٔ هفتگیِ استادِ این کلاس تداخل دارد.")
+                return
+            elif result == 'student_conflict':
+                QMessageBox.warning(self, "تداخل زمانی",
+                    "این ساعت با یکی دیگر از ترم‌های فعالِ همین هنرجو تداخل دارد.")
+                return
+            else:
+                QMessageBox.warning(self, "خطا", "ثبت‌نام برای ویرایش پیدا نشد.")
+                return
+        elif dlg.action == EditEnrollmentDialog.DELETE:
+            reply = QMessageBox.question(self, "حذف ثبت‌نام", "آیا این ثبت‌نام (ترم) حذف شود؟",
+                                         QMessageBox.Yes | QMessageBox.No)
+            if reply != QMessageBox.Yes:
+                return
+            has_history = not delete_term_if_no_history(student_id, self.selected_class_id, term_id)
+            if has_history:
+                QMessageBox.warning(self, "حذف ممکن نیست",
+                                    "برای ترم این هنرجو سابقه (پرداخت یا حضور و غیاب) ثبت شده است. "
+                                    "ترمی که سابقه دارد حذف نمی‌شود؛ در صورت نیاز ساعت آن را ویرایش کنید.")
+                return
+            QMessageBox.information(self, "موفق", "ثبت‌نام با موفقیت حذف شد.")
+        else:
             return
 
-        QMessageBox.information(self, "موفق", "ثبت‌نام با موفقیت حذف شد.")
         self.refresh_session_counts()
         self.load_students()
         self.load_sessions()

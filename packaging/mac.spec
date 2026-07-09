@@ -65,8 +65,8 @@ exe = EXE(
 )
 
 # Version for bundle (match acasmart.core.version)
-APP_VERSION = '1.1.2'
-APP_VERSION_INT = '112'
+APP_VERSION = '1.1.21'
+APP_VERSION_INT = '1121'
 
 app = BUNDLE(
     exe,
