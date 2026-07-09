@@ -39,6 +39,7 @@ class PaymentClassPickerPopup(QDialog):
         self.list_classes = QListWidget()
         self.list_classes.setObjectName("PaymentClassList")
         self.list_classes.itemClicked.connect(self._on_item_clicked)
+        self.list_classes.itemDoubleClicked.connect(self._confirm)  # دوبار کلیک = انتخاب
         self.layout().addWidget(self.list_classes)
 
         btn_ok = QPushButton("تأیید")

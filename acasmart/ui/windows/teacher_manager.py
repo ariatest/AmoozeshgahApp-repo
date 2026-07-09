@@ -17,7 +17,7 @@ from acasmart.data.repos.teacher_instruments_repo import (
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QListWidget, QListWidgetItem, QMessageBox, QFormLayout, QToolButton,
+    QListWidget, QListWidgetItem, QMessageBox, QFormLayout, QGridLayout, QToolButton,
     QStyle, QComboBox, QDialog
 )
 from PySide6.QtCore import Qt
@@ -50,6 +50,7 @@ class TeacherManager(BaseSecondaryWindow):
         self.btn_add_instrument.setProperty("variant", "secondary")
 
         self.list_instruments = QListWidget()
+        self.list_instruments.setMaximumHeight(90)  # فهرست سازها کوتاه بماند تا فضا هدر نرود
         self.list_instruments.itemDoubleClicked.connect(self.remove_instrument_from_list)
 
 
@@ -142,22 +143,32 @@ class TeacherManager(BaseSecondaryWindow):
 
 
         # add widgets to layout
-        form_layout = QFormLayout()
-        form_layout.addRow(": نام استاد", self.input_name)
-        form_layout.addRow(": تاریخ تولد", self.input_birth_date)
-        form_layout.addRow(": کد ملی", self.input_national_code)
-        form_layout.addRow(": شماره کارت تدریس", self.input_teaching_card)
-        form_layout.addRow(": جنسیت", self.combo_gender)
-        form_layout.addRow(": شماره تلفن", self.input_phone)
-        form_layout.addRow(": شماره کارت بانکی", self.input_card_number)
-        form_layout.addRow(": شماره شبا", self.input_iban)
+        # فرم دو-ستونه تا فضای عمودی کمتری بگیرد و لیست اساتید در پایین جای بیشتری داشته باشد
+        form_grid = QGridLayout()
+        form_grid.setHorizontalSpacing(16)
+        form_grid.setVerticalSpacing(8)
+
+        def _form_pair(r, c, label_text, widget):
+            form_grid.addWidget(QLabel(label_text), r, c * 2)
+            form_grid.addWidget(widget, r, c * 2 + 1)
+
+        _form_pair(0, 0, ": نام استاد", self.input_name)
+        _form_pair(0, 1, ": کد ملی", self.input_national_code)
+        _form_pair(1, 0, ": تاریخ تولد", self.input_birth_date)
+        _form_pair(1, 1, ": شماره کارت تدریس", self.input_teaching_card)
+        _form_pair(2, 0, ": جنسیت", self.combo_gender)
+        _form_pair(2, 1, ": شماره تلفن", self.input_phone)
+        _form_pair(3, 0, ": شماره کارت بانکی", self.input_card_number)
+        _form_pair(3, 1, ": شماره شبا", self.input_iban)
+        form_grid.setColumnStretch(1, 1)
+        form_grid.setColumnStretch(3, 1)
         layout.addWidget(QLabel("سازها:"))
         layout.addWidget(self.input_instrument)
         layout.addWidget(self.btn_add_instrument)
         layout.addWidget(QLabel("لیست سازهای انتخاب‌شده (برای حذف دوبار کلیک کنید):"))
         layout.addWidget(self.list_instruments)
 
-        layout.addLayout(form_layout)
+        layout.addLayout(form_grid)
         button_row = QHBoxLayout()
         button_row.addWidget(self.btn_add)
         button_row.addWidget(self.btn_update)
@@ -167,7 +178,7 @@ class TeacherManager(BaseSecondaryWindow):
         layout.addWidget(QLabel("جستجو در لیست اساتید:"))
         layout.addWidget(self.search_input)
         layout.addWidget(QLabel("لیست اساتید (برای حذف دوبار کلیک کنید):"))
-        layout.addWidget(self.list_teachers)
+        layout.addWidget(self.list_teachers, 1)  # کشیده شود تا فضای بیشتری برای خواندن داشته باشد
         layout.addWidget(self.lbl_count)
 
         # برای اینکه QSS جدید رو بخونه

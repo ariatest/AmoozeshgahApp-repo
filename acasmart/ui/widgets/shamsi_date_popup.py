@@ -46,6 +46,7 @@ class ShamsiDatePopup(QDialog):
         # به‌روزرسانی برچسب پس از انتخاب تاریخ جدید
         self.update_shamsi_label()
         self.calendar.selectionChanged.connect(self.update_shamsi_label)
+        self.calendar.activated.connect(self.accept)  # دوبار کلیک روی روز = تأیید
 
         # دکمه تایید نهایی تاریخ
         btn_ok = QPushButton("تأیید")

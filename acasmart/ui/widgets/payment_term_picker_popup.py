@@ -36,6 +36,7 @@ class PaymentTermPickerPopup(QDialog):
         self.list_terms = QListWidget()
         self.list_terms.setObjectName("PaymentTermList")
         self.list_terms.itemClicked.connect(self._on_item_clicked)
+        self.list_terms.itemDoubleClicked.connect(self._confirm)  # دوبار کلیک = انتخاب
         self.layout().addWidget(self.list_terms)
 
         btn_ok = QPushButton("تأیید")
