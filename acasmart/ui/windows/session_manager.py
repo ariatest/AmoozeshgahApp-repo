@@ -3,11 +3,11 @@ from __future__ import annotations
 from acasmart.data.repos.classes_repo import get_day_and_time_for_class, get_class_by_id
 from acasmart.data.repos.notifications_repo import get_unnotified_expired_terms, get_visible_finished_terms, dismiss_finished_terms, mark_terms_as_notified
 from acasmart.data.repos.payments_repo import delete_term_if_no_history
-from acasmart.data.repos.profiles_repo import list_pricing_profiles
+from acasmart.data.repos.profiles_repo import list_pricing_profiles, set_term_config, apply_profile_to_term
 from acasmart.data.repos.enrollment_repo import enroll, reschedule, fetch_enrollments_for_class, EnrollmentStatus
 from acasmart.data.repos.settings_repo import get_setting
 from acasmart.data.repos.students_repo import fetch_students_with_teachers
-from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student
+from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student, get_term_pricing
 from acasmart.core.schedule import first_on_or_after
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QListWidget, QListWidgetItem,
@@ -167,7 +167,8 @@ class EditEnrollmentDialog(QDialog):
     SAVE = 1
     DELETE = 2
 
-    def __init__(self, parent, student_name, class_start_time, current_time, current_duration):
+    def __init__(self, parent, student_name, class_start_time, current_time, current_duration,
+                 current_sessions=None, current_fee_toman=None, current_profile_id=None):
         super().__init__(parent)
         self.setWindowTitle("ویرایش ثبت‌نام")
         self.action = None
@@ -199,6 +200,69 @@ class EditEnrollmentDialog(QDialog):
         self.combo_duration.setCurrentIndex(1 if int(current_duration or 30) >= 60 else 0)
         row_d.addWidget(self.combo_duration)
         lay.addLayout(row_d)
+
+        # --- قیمت‌گذاری (پروفایل/سفارشی) — همیشه قابلِ ویرایش ---
+        self.ui_unit = currency_label()
+        self.currency_unit = get_setting("currency_unit", "toman")
+        self.profiles = list_pricing_profiles()  # [(id, name, sessions_limit, tuition_fee, currency_unit, is_default)]
+
+        lbl_price = QLabel("قیمت‌گذاری:")
+        lbl_price.setProperty("sectionTitle", True)
+        lay.addWidget(lbl_price)
+
+        self.rb_profile = QRadioButton("استفاده از پروفایل شهریه")
+        self.rb_custom = QRadioButton("شهریهٔ سفارشی")
+        self.profile_combo = QComboBox()
+        for pid, pname, sl, fee_toman, unit, is_def in self.profiles:
+            self.profile_combo.addItem(f"{pname} — {sl} جلسه، {format_currency_with_unit(fee_toman)}", pid)
+
+        self.spin_sessions = QSpinBox()
+        self.spin_sessions.setRange(1, 100)
+        self.spin_sessions.setValue(int(current_sessions) if current_sessions else int(get_setting("term_session_count", 12)))
+
+        self.spin_fee = QSpinBox()
+        self.spin_fee.setRange(0, 1_000_000_000)
+        self.spin_fee.setSingleStep(10000)
+        cur_fee_toman = int(current_fee_toman) if current_fee_toman else int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
+        self.spin_fee.setValue(cur_fee_toman * 10 if self.ui_unit == "ریال" else cur_fee_toman)
+
+        lay.addWidget(self.rb_profile)
+        lay.addWidget(self.profile_combo)
+        lay.addWidget(self.rb_custom)
+        row_s = QHBoxLayout()
+        row_s.addWidget(QLabel("سقف جلسات:"))
+        row_s.addWidget(self.spin_sessions)
+        lay.addLayout(row_s)
+        row_f = QHBoxLayout()
+        row_f.addWidget(QLabel(f"شهریه (به {self.ui_unit}):"))
+        row_f.addWidget(self.spin_fee)
+        lay.addLayout(row_f)
+
+        # حالتِ اولیه بر اساس وضعیتِ فعلیِ ترم: اگر روی پروفایلی بوده و آن پروفایل هست → پروفایل، وگرنه سفارشی
+        preselect = -1
+        if current_profile_id is not None:
+            for idx in range(self.profile_combo.count()):
+                if self.profile_combo.itemData(idx) == current_profile_id:
+                    preselect = idx
+                    break
+        if not self.profiles:
+            self.rb_profile.setEnabled(False)
+            self.profile_combo.setEnabled(False)
+            self.rb_custom.setChecked(True)
+        elif preselect >= 0:
+            self.profile_combo.setCurrentIndex(preselect)
+            self.rb_profile.setChecked(True)
+        else:
+            self.rb_custom.setChecked(True)
+
+        def _sync_pricing():
+            custom = self.rb_custom.isChecked()
+            self.spin_sessions.setEnabled(custom)
+            self.spin_fee.setEnabled(custom)
+            self.profile_combo.setEnabled(not custom and bool(self.profiles))
+        self.rb_profile.toggled.connect(_sync_pricing)
+        self.rb_custom.toggled.connect(_sync_pricing)
+        _sync_pricing()
 
         btns = QHBoxLayout()
         self.btn_save = QPushButton("💾 ذخیرهٔ تغییرات")
@@ -240,6 +304,25 @@ class EditEnrollmentDialog(QDialog):
     def _on_delete(self):
         self.action = self.DELETE
         self.accept()
+
+    def get_pricing(self):
+        """قیمت‌گذاریِ انتخاب‌شده: dict با کلیدهای sessions_limit/tuition_fee/currency_unit/profile_id."""
+        if self.rb_custom.isChecked() or not self.profiles:
+            return {
+                "sessions_limit": int(self.spin_sessions.value()),
+                "tuition_fee": int(parse_user_amount_to_toman(str(self.spin_fee.value()))),
+                "currency_unit": self.currency_unit,
+                "profile_id": None,
+            }
+        pid = self.profile_combo.currentData()
+        row = next((p for p in self.profiles if p[0] == pid), None)
+        if row:
+            _, _, sl, fee_toman, unit, _ = row
+            return {"sessions_limit": int(sl), "tuition_fee": int(fee_toman),
+                    "currency_unit": unit or self.currency_unit, "profile_id": pid}
+        return {"sessions_limit": int(self.spin_sessions.value()),
+                "tuition_fee": int(parse_user_amount_to_toman(str(self.spin_fee.value()))),
+                "currency_unit": self.currency_unit, "profile_id": None}
 
 
 class FinishedTermsDialog(QDialog):
@@ -652,25 +735,34 @@ class SessionManager(BaseSecondaryWindow):
             return
 
         _class_day, class_start_time = get_day_and_time_for_class(self.selected_class_id)
-        dlg = EditEnrollmentDialog(self, name, class_start_time, cur_time, cur_dur)
+        pricing = get_term_pricing(term_id)  # (sessions_limit, tuition_fee, currency_unit, profile_id) یا None
+        cur_sl, cur_fee, _cur_unit, cur_pid = pricing if pricing else (None, None, None, None)
+        dlg = EditEnrollmentDialog(self, name, class_start_time, cur_time, cur_dur,
+                                   current_sessions=cur_sl, current_fee_toman=cur_fee, current_profile_id=cur_pid)
         if dlg.exec_() != QDialog.Accepted:
             return
 
         if dlg.action == EditEnrollmentDialog.SAVE:
+            # ۱) ساعت/مدت (با بررسی تداخل)
             result = reschedule(term_id, dlg.new_time, dlg.new_duration)
-            if result.ok:
-                QMessageBox.information(self, "موفق", f"ساعت ثبت‌نام به {dlg.new_time} تغییر کرد.")
-            elif result.status == EnrollmentStatus.TEACHER_CONFLICT:
-                QMessageBox.warning(self, "تداخل زمانی",
-                    "این ساعت با برنامهٔ هفتگیِ استادِ این کلاس تداخل دارد.")
+            if not result.ok:
+                if result.status == EnrollmentStatus.TEACHER_CONFLICT:
+                    QMessageBox.warning(self, "تداخل زمانی",
+                        "این ساعت با برنامهٔ هفتگیِ استادِ این کلاس تداخل دارد.")
+                elif result.status == EnrollmentStatus.STUDENT_CONFLICT:
+                    QMessageBox.warning(self, "تداخل زمانی",
+                        "این ساعت با یکی دیگر از ترم‌های فعالِ همین هنرجو تداخل دارد.")
+                else:
+                    QMessageBox.warning(self, "خطا", "ثبت‌نام برای ویرایش پیدا نشد.")
                 return
-            elif result.status == EnrollmentStatus.STUDENT_CONFLICT:
-                QMessageBox.warning(self, "تداخل زمانی",
-                    "این ساعت با یکی دیگر از ترم‌های فعالِ همین هنرجو تداخل دارد.")
-                return
+            # ۲) قیمت‌گذاری (همیشه قابلِ ویرایش — حتی با وجودِ سابقهٔ پرداخت/حضور)
+            pr = dlg.get_pricing()
+            if pr.get("profile_id") is not None:
+                apply_profile_to_term(term_id, pr["profile_id"])
             else:
-                QMessageBox.warning(self, "خطا", "ثبت‌نام برای ویرایش پیدا نشد.")
-                return
+                set_term_config(term_id, sessions_limit=pr["sessions_limit"],
+                                tuition_fee=pr["tuition_fee"], currency_unit=pr["currency_unit"], profile_id=None)
+            QMessageBox.information(self, "موفق", f"ثبت‌نام به‌روزرسانی شد (ساعت: {dlg.new_time}).")
         elif dlg.action == EditEnrollmentDialog.DELETE:
             reply = QMessageBox.question(self, "حذف ثبت‌نام", "آیا این ثبت‌نام (ترم) حذف شود؟",
                                          QMessageBox.Yes | QMessageBox.No)

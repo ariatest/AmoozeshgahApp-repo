@@ -98,6 +98,29 @@ def fetch_payments(student_id=None, class_id=None, date_from=None, date_to=None,
 		return c.fetchall()
 
 
+def get_payments_with_notes_by_terms(term_ids):
+	"""{term_id: [(payment_type, amount, description), ...]} — پرداخت‌های هر ترم برای ستونِ توضیحاتِ گزارش مالی.
+
+	یک کوئریِ گروهی (بدون N+1)؛ description تهی به رشتهٔ خالی نگاشته می‌شود.
+	"""
+	ids = list(term_ids)
+	if not ids:
+		return {}
+	placeholders = ",".join("?" * len(ids))
+	with get_connection() as conn:
+		c = conn.cursor()
+		c.execute(f"""
+			SELECT term_id, payment_type, amount, COALESCE(description, '')
+			FROM payments
+			WHERE term_id IN ({placeholders})
+			ORDER BY payment_date
+		""", ids)
+		result = {}
+		for term_id, ptype, amount, desc in c.fetchall():
+			result.setdefault(term_id, []).append((ptype, amount, desc))
+	return result
+
+
 def get_total_paid_for_term(term_id, payment_type='tuition'):
 	"""
 	جمع مبلغ پرداختی برای یک ترم مشخص (پیش‌فرض فقط شهریه).

@@ -329,6 +329,20 @@ def get_term_dates(term_id):
 		return c.fetchone()
 
 
+def get_term_pricing(term_id):
+	"""قیمت‌گذاریِ خامِ ترم: (sessions_limit, tuition_fee, currency_unit, profile_id) یا None.
+
+	مقادیرِ ذخیره‌شده روی خودِ ترم (بدونِ آبشار) — برای پیش‌پرکردنِ دیالوگِ ویرایشِ ثبت‌نام.
+	"""
+	with get_connection() as conn:
+		c = conn.cursor()
+		c.execute(
+			"SELECT sessions_limit, tuition_fee, currency_unit, profile_id FROM student_terms WHERE id = ?",
+			(term_id,),
+		)
+		return c.fetchone()
+
+
 def get_all_expired_terms():
 	with get_connection() as conn:
 		c = conn.cursor()

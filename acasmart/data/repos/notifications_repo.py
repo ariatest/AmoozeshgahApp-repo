@@ -30,7 +30,7 @@ def get_unnotified_expired_terms():
 
 
 def get_visible_finished_terms():
-	"""ترم‌های پایان‌یافته‌ای که کاربر از فهرست پاک‌شان نکرده — برای دکمهٔ «نمایش ترم‌های پایان‌یافته (بدون حذف)»."""
+	"""ترم‌های پایان‌یافته‌ای که کاربر از فهرست پاک‌شان نکرده — برای دکمهٔ «نمایش ترم‌های پایان‌یافته »."""
 	with get_connection() as conn:
 		c = conn.cursor()
 		c.execute(_FINISHED_TERMS_SELECT + _NOT_DISMISSED + " ORDER BY t.end_date DESC")
