@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from acasmart.data.repos.attendance_repo import (
     fetch_attendance_status_by_date,
-    insert_attendance_with_date,
     delete_attendance,
 )
 from acasmart.data.repos.settings_repo import get_setting_bool
@@ -14,6 +13,7 @@ from acasmart.data.repos.classes_repo import fetch_classes_on_weekday
 from acasmart.data.repos.students_repo import get_student_contact
 from acasmart.services import renewal_reminder
 from acasmart.services.renewal_reminder import RenewalOutcome
+from acasmart.services.attendance_recording import record_attendance
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
@@ -400,15 +400,10 @@ class AttendanceManager(BaseSecondaryWindow):
                     any_saved = True   # ✅ الان می‌دونیم حداقل یک ردیف ذخیره شد
                     status = "present" if present else "absent"
 
-                    # --- ثبت واقعی رکورد امروز ---
-                    ended = insert_attendance_with_date(
-                        sid, self.selected_class_id, term_id, selected_date, status
-                    )
-
-                    # یادآوری تمدید: ماژول خودش تصمیم می‌گیرد (دقیقاً یک جلسه مانده و قبلاً ارسال نشده)
-                    outcome = renewal_reminder.maybe_send(term_id, sid, self.selected_class_id)
-                    # فقط شکستِ واقعی گزارش می‌شود؛ NOT_DUE/ALREADY_SENT/SENT/DISABLED خطا نیستند.
-                    if outcome in (RenewalOutcome.FAILED, RenewalOutcome.NO_PHONE):
+                    # ثبت رکورد امروز + اثرهای پیرو (تکمیلِ ترم و یادآوریِ تمدید) در یک فراخوانی
+                    result = record_attendance(term_id, sid, self.selected_class_id, selected_date, status)
+                    # فقط شکستِ واقعیِ پیامک گزارش می‌شود؛ NOT_DUE/ALREADY_SENT/SENT/DISABLED خطا نیستند.
+                    if result.reminder in (RenewalOutcome.FAILED, RenewalOutcome.NO_PHONE):
                         name, _ = get_student_contact(sid)
                         failed_sms.append(name)
 
@@ -448,7 +443,7 @@ class AttendanceManager(BaseSecondaryWindow):
             return
         reason = (reason or "").strip() or None
         try:
-            insert_attendance_with_date(student_id, class_id, term_id, date_value, "canceled", reason)
+            record_attendance(term_id, student_id, class_id, date_value, "canceled", cancel_reason=reason)
         except Exception as e:
             QMessageBox.warning(self, "خطا", f"ثبت لغو جلسه با خطا مواجه شد:\n{e}")
             return
