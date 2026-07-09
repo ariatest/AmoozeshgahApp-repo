@@ -7,7 +7,7 @@ from acasmart.data.repos.attendance_repo import (
 )
 from acasmart.data.repos.settings_repo import get_setting_bool
 from acasmart.data.repos.terms_repo import get_term_dates, refresh_completion, term_progress
-from acasmart.data.repos.sessions_repo import (
+from acasmart.data.repos.enrollment_repo import (
     fetch_scheduled_students_for_class_on_date,
 )
 from acasmart.data.repos.classes_repo import fetch_classes_on_weekday

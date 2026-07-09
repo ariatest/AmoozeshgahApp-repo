@@ -52,11 +52,11 @@ SQLite DB  →  data/db.py::get_connection()  →  data/repos/<domain>_repo.py  
 
 There is **no `sessions` table** (dropped in migration v6). A lesson is not a stored row — it is computed from the enrollment's weekly schedule:
 
-- **Enrollment = a `student_terms` row** (the "Term"): `student_id`, `class_id`, `start_date`, `start_time`, `lesson_duration`, `sessions_limit`, snapshotted tuition, `end_date`. Created via `sessions_repo.enroll_student()` → `terms_repo.insert_student_term_if_not_exists()`. `start_date` is snapped to the class weekday with `core/schedule.first_on_or_after()`.
+- **Enrollment = a `student_terms` row** (the "Term"): `student_id`, `class_id`, `start_date`, `start_time`, `lesson_duration`, `sessions_limit`, snapshotted tuition, `end_date`. Created via `enrollment_repo.enroll()` (returns an `EnrollmentResult` carrying the `term_id`, or a precise reason on failure). `start_date` is snapped to the class weekday with `core/schedule.first_on_or_after()`.
 - **Occurrences are computed** weekly from `start_date` (same weekday, every 7 days) by `core/schedule.py` (`is_weekly_occurrence`, `occurrence_dates`). All dates are Shamsi strings; arithmetic goes through `jdatetime`.
-- The attendance list comes from `sessions_repo.fetch_scheduled_students_for_class_on_date()` — computed from `student_terms` + `attendance`, never from session rows.
+- The attendance list comes from `enrollment_repo.fetch_scheduled_students_for_class_on_date()` — computed from `student_terms` + `attendance`, never from session rows.
 - `attendance` (keyed by `term_id` + `date`) is the **only** record of what actually happened.
-- `sessions_repo.py` is misnamed for history — it now holds enrollment + schedule-conflict functions, not session CRUD. See `docs/MODEL-B-DESIGN.md`.
+- `enrollment_repo.py` (renamed from the misnamed `sessions_repo`) owns the enrollment lifecycle — `enroll()` / `reschedule()` plus interval-aware schedule-conflict detection — over `student_terms`; there is no session CRUD. `terms_repo` owns reads about an existing Term (progress, config, completion). See `docs/MODEL-B-DESIGN.md`.
 
 ### Migration framework (`data/migrator.py`)
 
@@ -97,7 +97,7 @@ Current `MIGRATIONS` list: v2 payments integrity, v3 attendance status, v4 lesso
 - **Three-state attendance**: `status` is `'present'`, `'absent'`, or `'canceled'`. Canceled sessions are never counted toward the term session limit. All counting queries must filter `AND status != 'canceled'`.
 - **Term completion is derived**: `terms_repo.refresh_term_completion(term_id)` sets or clears `end_date` based on counted attendance vs `sessions_limit`. It is two-way — it can re-open a completed term if an attendance record is deleted. Call it after every attendance change.
 - **One active term rule**: enforced by `idx_one_active_term` partial unique index on `student_terms(student_id, class_id) WHERE end_date IS NULL` (added in migration v5). `insert_student_term_if_not_exists` catches `IntegrityError` from this index and returns `None`.
-- **Interval-aware conflict detection**: `has_student_schedule_conflict` and `has_teacher_schedule_conflict` in `sessions_repo.py` compare `[start, start+duration)` intervals over active `student_terms` on the same weekday, not exact time strings. Called by `insert_student_term_if_not_exists`.
+- **Interval-aware conflict detection**: `_has_student_schedule_conflict` and `_has_teacher_schedule_conflict` in `enrollment_repo.py` compare `[start, start+duration)` intervals over active `student_terms` on the same weekday, not exact time strings. Used internally by `enroll()` / `reschedule()`.
 - **Persian calendar**: all business dates are Shamsi (Jalali) stored as `YYYY-MM-DD` text. Use `ShamsiDatePicker` / `ShamsiDatePopup` widgets; never use Gregorian dates in the UI.
 
 ## Design history

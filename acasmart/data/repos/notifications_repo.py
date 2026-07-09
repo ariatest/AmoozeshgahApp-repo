@@ -4,34 +4,49 @@ from acasmart.data.db import get_connection
 logger = logging.getLogger(__name__)
 
 
+# ستون‌های مشترکِ «ترم‌های پایان‌یافته» — یک شکل برای اعلانِ خودکار و برای دکمهٔ نمایش.
+_FINISHED_TERMS_SELECT = """
+	SELECT
+		t.student_id, t.class_id, s.name, s.national_code, c.name, c.day,
+		t.id AS term_id, t.end_date AS session_date, t.start_time AS session_time
+	FROM student_terms t
+	JOIN students s ON s.id = t.student_id
+	JOIN classes c  ON c.id = t.class_id
+	WHERE t.end_date IS NOT NULL
+"""
+
+
+_NOT_DISMISSED = " AND NOT EXISTS (SELECT 1 FROM dismissed_finished_terms d WHERE d.term_id = t.id)"
+
+
 def get_unnotified_expired_terms():
-	"""
-	لیست ترم‌هایی که end_date آنها ست شده ولی هنوز نوتیف نداده‌ایم.
-	"""
+	"""ترم‌های پایان‌یافته‌ای که نه اعلان شده‌اند و نه پاک‌شده — برای اعلانِ خودکارِ یک‌بارهٔ هنگام باز کردنِ پنجره."""
 	with get_connection() as conn:
 		c = conn.cursor()
-		c.execute("""
-			SELECT 
-				t.student_id,
-				t.class_id,
-				s.name,
-				s.national_code,
-				c.name,
-				c.day,
-				t.id      AS term_id,
-				t.end_date   AS session_date,
-				t.start_time AS session_time
-			FROM student_terms t
-			JOIN students s ON s.id = t.student_id
-			JOIN classes c  ON c.id = t.class_id
-			WHERE t.end_date IS NOT NULL
-			  AND NOT EXISTS (
-				  SELECT 1 
-				  FROM notified_terms n 
-				  WHERE n.term_id = t.id
-			  )
-		""")
+		c.execute(_FINISHED_TERMS_SELECT +
+			" AND NOT EXISTS (SELECT 1 FROM notified_terms n WHERE n.term_id = t.id)" +
+			_NOT_DISMISSED)
 		return c.fetchall()
+
+
+def get_visible_finished_terms():
+	"""ترم‌های پایان‌یافته‌ای که کاربر از فهرست پاک‌شان نکرده — برای دکمهٔ «نمایش ترم‌های پایان‌یافته (بدون حذف)»."""
+	with get_connection() as conn:
+		c = conn.cursor()
+		c.execute(_FINISHED_TERMS_SELECT + _NOT_DISMISSED + " ORDER BY t.end_date DESC")
+		return c.fetchall()
+
+
+def dismiss_finished_terms(term_ids):
+	"""ترم‌های پایان‌یافته را از فهرستِ نمایش پنهان می‌کند (فقط در نما؛ ردیفِ ترم و سابقه‌اش باقی می‌مانند)."""
+	if not term_ids:
+		return
+	with get_connection() as conn:
+		conn.executemany(
+			"INSERT OR IGNORE INTO dismissed_finished_terms (term_id) VALUES (?)",
+			[(tid,) for tid in term_ids],
+		)
+		conn.commit()
 
 
 def mark_terms_as_notified(term_info_list):

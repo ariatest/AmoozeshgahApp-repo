@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from acasmart.data.repos.classes_repo import get_day_and_time_for_class, get_class_by_id
-from acasmart.data.repos.notifications_repo import get_unnotified_expired_terms, mark_terms_as_notified
+from acasmart.data.repos.notifications_repo import get_unnotified_expired_terms, get_visible_finished_terms, dismiss_finished_terms, mark_terms_as_notified
 from acasmart.data.repos.payments_repo import delete_term_if_no_history
 from acasmart.data.repos.profiles_repo import list_pricing_profiles
-from acasmart.data.repos.sessions_repo import enroll_student, fetch_enrollments_for_class
+from acasmart.data.repos.enrollment_repo import enroll, reschedule, fetch_enrollments_for_class, EnrollmentStatus
 from acasmart.data.repos.settings_repo import get_setting
 from acasmart.data.repos.students_repo import fetch_students_with_teachers
-from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student, update_term_schedule
+from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student
 from acasmart.core.schedule import first_on_or_after
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QListWidget, QListWidgetItem,
@@ -242,6 +242,56 @@ class EditEnrollmentDialog(QDialog):
         self.accept()
 
 
+class FinishedTermsDialog(QDialog):
+    """فهرستِ ترم‌های پایان‌یافته با دکمهٔ «پاک‌کردن فهرست» در بالا (همیشه دیده می‌شود) و فهرستِ اسکرول‌شونده.
+
+    خروجی: cleared == True اگر کاربر «پاک‌کردن فهرست» را زده باشد.
+    """
+    def __init__(self, parent, rows):
+        super().__init__(parent)
+        self.setWindowTitle("ترم‌های پایان‌یافته")
+        self.resize(560, 480)
+        self.cleared = False
+
+        lay = QVBoxLayout(self)
+
+        # نوار بالا: پاک‌کردن + بستن — بالای فهرست تا با بلندشدنِ فهرست هم دیده شوند
+        top = QHBoxLayout()
+        self.btn_clear = QPushButton("🧹 پاک‌کردن فهرست")
+        self.btn_clear.setProperty("variant", "secondary")
+        self.btn_clear.clicked.connect(self._on_clear)
+        btn_close = QPushButton("بستن")
+        btn_close.setProperty("variant", "ghost")
+        btn_close.clicked.connect(self.reject)
+        top.addWidget(self.btn_clear)
+        top.addStretch(1)
+        top.addWidget(btn_close)
+        lay.addLayout(top)
+
+        lbl = QLabel("هنرجویان زیر ترم‌شان به پایان رسیده است:")
+        lbl.setProperty("sectionTitle", True)
+        lay.addWidget(lbl)
+
+        # فهرستِ اسکرول‌شونده (QListWidget خودش اسکرول دارد)
+        self.list = QListWidget()
+        for (student_id, class_id, student_name, national_code,
+             class_name, day, term_id, session_date, session_time) in rows:
+            self.list.addItem(
+                f"• {student_name} | کدملی: {national_code} | {class_name} ({day}) — {session_date} ساعت {session_time}"
+            )
+        lay.addWidget(self.list)
+
+        for w in (self.btn_clear, btn_close):
+            try:
+                ThemeManager.repolish(w)
+            except Exception:
+                pass
+
+    def _on_clear(self):
+        self.cleared = True
+        self.accept()
+
+
 class SessionManager(BaseSecondaryWindow):
     def __init__(self, return_target: QWidget | None = None):
         super().__init__("مدیریت ثبت‌نام هنرجویان", return_target)
@@ -327,7 +377,7 @@ class SessionManager(BaseSecondaryWindow):
         # دکمه پاکسازی ترم پایان یافته
         self.btn_notify_expired = QPushButton("📣 نمایش ترم‌های پایان‌یافته (بدون حذف)")
         self.btn_notify_expired.setProperty("variant", "secondary")
-        self.btn_notify_expired.clicked.connect(self.check_and_notify_term_ends)
+        self.btn_notify_expired.clicked.connect(self.show_finished_terms)
         layout.addWidget(self.btn_notify_expired)
 
         # Enrollments list (Model-B: ثبت‌نام‌های فعال این کلاس)
@@ -360,19 +410,34 @@ class SessionManager(BaseSecondaryWindow):
             self.session_counts_by_student = {}
 
     def check_and_notify_term_ends(self):
+        """اعلانِ خودکارِ ترم‌های تازه‌پایان‌یافته هنگام باز شدنِ پنجره — هر ترم فقط یک‌بار."""
         expired = get_unnotified_expired_terms()
         if not expired:
             return
+        QMessageBox.information(self, "پایان ترم‌ها", self._format_finished_terms(expired))
+        # ثبت به‌عنوان «اطلاع‌داده‌شده» تا با هر بار بازکردنِ پنجره دوباره اعلام نشوند
+        to_mark = [(r[6], r[0], r[1], r[7], r[8]) for r in expired]  # (term_id, student_id, class_id, date, time)
+        mark_terms_as_notified(to_mark)
 
+    def show_finished_terms(self):
+        """دکمهٔ «نمایش ترم‌های پایان‌یافته (بدون حذف)»: ترم‌های پایان‌یافتهٔ پاک‌نشده را در یک دیالوگِ
+        اسکرول‌شونده نشان می‌دهد؛ دکمهٔ «پاک‌کردن فهرست» در بالا آن‌ها را فقط از نما پنهان می‌کند."""
+        finished = get_visible_finished_terms()
+        if not finished:
+            QMessageBox.information(self, "ترم‌های پایان‌یافته", "در حال حاضر ترمِ پایان‌یافته‌ای برای نمایش وجود ندارد.")
+            return
+        dlg = FinishedTermsDialog(self, finished)
+        dlg.exec_()
+        if dlg.cleared:
+            dismiss_finished_terms([r[6] for r in finished])  # r[6] = term_id
+            QMessageBox.information(self, "انجام شد",
+                "فهرست ترم‌های پایان‌یافته پاک شد. (ترم‌ها و سابقهٔ آن‌ها حذف نشده‌اند.)")
+
+    def _format_finished_terms(self, rows):
         message = "هنرجویان زیر ترم‌شان به پایان رسیده است :\n"
-        to_mark = []
-
-        for student_id, class_id, student_name, national_code, class_name, day, term_id, session_date, session_time in expired:
+        for student_id, class_id, student_name, national_code, class_name, day, term_id, session_date, session_time in rows:
             message += f"\n• {student_name} | کدملی: {national_code} | {class_name} ({day}) — {session_date} ساعت {session_time}"
-            to_mark.append((term_id, student_id, class_id, session_date, session_time))
-
-        # ⛳️ نمایش پیام پایانِ ترم‌ها
-        QMessageBox.information(self, "پایان ترم‌ها", message)
+        return message
 
     def open_student_picker(self):
         """باز کردن popup انتخاب هنرجو؛ بعد از تأیید، هنرجو در ویجت نمایش داده می‌شود."""
@@ -503,11 +568,11 @@ class SessionManager(BaseSecondaryWindow):
             date = first_on_or_after(self.selected_shamsi_date, class_day)
 
         # Model-B ثبت‌نام: ساخت ترم (بدون رکوردِ جلسه؛ جلسات هفتگی از روی برنامه محاسبه می‌شوند).
-        # تداخل‌های هنرجو/استاد و قاعدهٔ «یک ترم فعال» داخل enroll_student بررسی می‌شوند.
+        # تداخل‌های هنرجو/استاد و قاعدهٔ «یک ترم فعال» داخل enroll() بررسی می‌شوند و دلیلِ دقیق برمی‌گردد.
         start_time = self.time_session.time().toString("HH:mm")
-        self.selected_term_id = enroll_student(
-            self.selected_class_id,
+        result = enroll(
             self.selected_student_id,
+            self.selected_class_id,
             date,
             start_time,
             sessions_limit = cfg.get("sessions_limit"),
@@ -517,17 +582,26 @@ class SessionManager(BaseSecondaryWindow):
             lesson_duration= cfg.get("lesson_duration"),
         )
 
-        if self.selected_term_id is None:
-            last_term_end_date = get_last_term_end_date(self.selected_student_id, self.selected_class_id)
-            if last_term_end_date:
+        if not result.ok:
+            if result.status == EnrollmentStatus.BEFORE_PREVIOUS_END:
+                last_term_end_date = get_last_term_end_date(self.selected_student_id, self.selected_class_id)
                 QMessageBox.warning(self, "عدم امکان ثبت‌نام",
                     f"ترم قبلی هنرجو در این کلاس در تاریخ {last_term_end_date} به پایان رسیده است.\n"
                     f"امکان ثبت‌نام جدید از تاریخ {last_term_end_date} به بعد وجود دارد.")
-            else:
+            elif result.status == EnrollmentStatus.DUPLICATE_ACTIVE:
                 QMessageBox.warning(self, "عدم امکان ثبت‌نام",
-                    "ثبت‌نام ممکن نیست: این هنرجو از قبل ترم فعالی در این کلاس دارد، "
-                    "یا این زمان با برنامهٔ هفتگیِ هنرجو/استاد تداخل دارد.")
+                    "این هنرجو از قبل ترم فعالی در این کلاس دارد.")
+            elif result.status == EnrollmentStatus.TEACHER_CONFLICT:
+                QMessageBox.warning(self, "تداخل زمانی",
+                    "این زمان با برنامهٔ هفتگیِ استادِ این کلاس تداخل دارد.")
+            elif result.status == EnrollmentStatus.STUDENT_CONFLICT:
+                QMessageBox.warning(self, "تداخل زمانی",
+                    "این زمان با یکی دیگر از ترم‌های فعالِ همین هنرجو تداخل دارد.")
+            else:
+                QMessageBox.warning(self, "عدم امکان ثبت‌نام", "ثبت‌نام ممکن نبود.")
             return
+
+        self.selected_term_id = result.term_id
 
         QMessageBox.information(self, "موفق",
             f"ثبت‌نام هنرجو با شروع از {date} ساعت {start_time} انجام شد.")
@@ -583,14 +657,14 @@ class SessionManager(BaseSecondaryWindow):
             return
 
         if dlg.action == EditEnrollmentDialog.SAVE:
-            result = update_term_schedule(term_id, dlg.new_time, dlg.new_duration)
-            if result is True:
+            result = reschedule(term_id, dlg.new_time, dlg.new_duration)
+            if result.ok:
                 QMessageBox.information(self, "موفق", f"ساعت ثبت‌نام به {dlg.new_time} تغییر کرد.")
-            elif result == 'teacher_conflict':
+            elif result.status == EnrollmentStatus.TEACHER_CONFLICT:
                 QMessageBox.warning(self, "تداخل زمانی",
                     "این ساعت با برنامهٔ هفتگیِ استادِ این کلاس تداخل دارد.")
                 return
-            elif result == 'student_conflict':
+            elif result.status == EnrollmentStatus.STUDENT_CONFLICT:
                 QMessageBox.warning(self, "تداخل زمانی",
                     "این ساعت با یکی دیگر از ترم‌های فعالِ همین هنرجو تداخل دارد.")
                 return
