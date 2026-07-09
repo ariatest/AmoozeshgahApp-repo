@@ -60,11 +60,11 @@ def fetch_scheduled_students_for_class_on_date(class_id, selected_date, include_
 	Returns rows: (sid, name, teacher, start_time, term_id).
 	"""
 	from acasmart.core.schedule import is_weekly_occurrence
+	from acasmart.data.repos.terms_repo import term_progress
 	with get_connection() as conn:
 		c = conn.cursor()
 		c.execute("""
-			SELECT st.id, st.student_id, s.name, t.name, st.start_time, st.start_date,
-			       st.end_date, COALESCE(st.sessions_limit, 0)
+			SELECT st.id, st.student_id, s.name, t.name, st.start_time, st.start_date, st.end_date
 			FROM student_terms st
 			JOIN students s ON s.id = st.student_id
 			JOIN classes c2 ON st.class_id = c2.id
@@ -74,19 +74,15 @@ def fetch_scheduled_students_for_class_on_date(class_id, selected_date, include_
 		rows = c.fetchall()
 
 		result = []
-		for term_id, sid, sname, tname, start_time, start_date, end_date, limit in rows:
+		for term_id, sid, sname, tname, start_time, start_date, end_date in rows:
 			if end_date is not None and not include_completed:
 				continue
-			c.execute("""
-				SELECT
-					SUM(CASE WHEN status != 'canceled' THEN 1 ELSE 0 END),
-					SUM(CASE WHEN date = ? THEN 1 ELSE 0 END)
-				FROM attendance WHERE term_id = ?
-			""", (selected_date, term_id))
-			hrow = c.fetchone()
-			held = hrow[0] or 0
-			has_record = (hrow[1] or 0) > 0
-			is_occ = is_weekly_occurrence(start_date, selected_date) and held < int(limit or 0)
+			# آیا برای این تاریخ رکوردی ثبت شده؟ (تا تاریخ‌های ثبت‌شده/جبرانی ویرایش‌پذیر بمانند)
+			c.execute("SELECT 1 FROM attendance WHERE term_id = ? AND date = ? LIMIT 1", (term_id, selected_date))
+			has_record = c.fetchone() is not None
+			# آیا این تاریخ یک تکرارِ هفتگی است و ترم هنوز جا دارد؟ (سقف از قاعدهٔ واحدِ terms_repo)
+			p = term_progress(term_id)
+			is_occ = is_weekly_occurrence(start_date, selected_date) and p is not None and p.remaining > 0
 			if has_record or is_occ:
 				result.append((sid, sname, tname, start_time, term_id))
 

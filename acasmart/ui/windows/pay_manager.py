@@ -3,7 +3,7 @@ from __future__ import annotations
 from acasmart.data.repos.payments_repo import get_payment_by_id, get_terms_for_payment_management, get_total_paid_for_term, insert_payment, update_payment_by_id
 from acasmart.data.repos.settings_repo import get_setting
 from acasmart.data.repos.students_repo import fetch_registered_classes_for_student, fetch_students_with_teachers
-from acasmart.data.repos.terms_repo import count_attendance_for_term, get_term_id_by_student_and_class, get_term_sessions_limit_by_id, get_term_tuition_by_id
+from acasmart.data.repos.terms_repo import consumed, get_term_id_by_student_and_class, get_term_tuition_by_id, term_progress
 from PySide6.QtWidgets import (
     QWidget, QLabel, QLineEdit, QPushButton, QListWidget, QListWidgetItem,
     QVBoxLayout, QHBoxLayout, QFormLayout, QTextEdit, QComboBox, QMessageBox, QDialog
@@ -270,8 +270,7 @@ class PaymentManager(BaseSecondaryWindow):
                 return
 
             self.term_missing = False
-            limit = int(get_setting("term_session_count", 12))
-            done = count_attendance_for_term(term_id)  # ← استفاده مستقیم از term_id
+            done = consumed(term_id)
             limit = self._get_term_sessions_limit()
             self.term_expired = (done >= limit)
         else:
@@ -294,7 +293,7 @@ class PaymentManager(BaseSecondaryWindow):
             return
 
         self.term_missing = False
-        done = count_attendance_for_term(self.selected_term_id)
+        done = consumed(self.selected_term_id)
         limit = self._get_term_sessions_limit()
         self.term_expired = (done >= limit)
 
@@ -586,9 +585,9 @@ class PaymentManager(BaseSecondaryWindow):
         """سقف جلسات ترم انتخاب‌شده را از DB می‌خواند؛ در صورت عدم وجود، از تنظیمات پیش‌فرض."""
         try:
             if self.selected_term_id:
-                lim = get_term_sessions_limit_by_id(self.selected_term_id)
-                if lim:
-                    return int(lim)
+                p = term_progress(self.selected_term_id)
+                if p:
+                    return p.limit
         except Exception:
             pass
         return int(get_setting("term_session_count", 12))

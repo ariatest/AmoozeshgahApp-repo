@@ -88,6 +88,10 @@ _Avoid_: Cancellation, skipped session
 A scheduled Session that does not happen and therefore does not consume a session from the Student's Term. Canceled Sessions stay visible in history with a cancellation status or reason, but do not appear as attendable Sessions.
 _Avoid_: Absence, deleted session
 
+**Session Consumption**:
+The number of sessions a Term has used, counted as its Present plus Absence Attendance records; a Canceled Session never counts. A Term is complete when consumption reaches its session limit, where the limit is resolved as Term snapshot → Pricing Profile → the default `term_session_count` setting. Because completion is derived, deleting an Attendance record lowers consumption and can re-open a completed Term.
+_Avoid_: Held sessions, attended count (present-only)
+
 **Rescheduled Session**:
 A scheduled Session moved to a different date or time while staying in the same Term. Rescheduling is not a distinct record: it is modeled as a Canceled Session (reason "rescheduled") on the original date plus normal Attendance on the new date, so the Term still consumes exactly one session.
 _Avoid_: Absence, separate reschedule entity

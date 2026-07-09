@@ -1,8 +1,35 @@
+from __future__ import annotations
+
 import logging
 import sqlite3
+from dataclasses import dataclass
+
 from acasmart.data.db import get_connection
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TermProgress:
+	"""پیشرفتِ یک ترم: چند جلسه مصرف شده و آیا تکمیل شده است.
+
+	`consumed` = حاضر + غایب (جلسهٔ لغوشده شمرده نمی‌شود).
+	`limit` با آبشارِ واحد حل می‌شود: student_terms → pricing_profiles → تنظیمِ term_session_count.
+	`remaining` و `is_complete` مشتق‌اند تا هرگز با consumed/limit ناسازگار نشوند.
+	"""
+	term_id: int
+	consumed: int
+	limit: int
+	last_date: str | None
+	end_date: str | None
+
+	@property
+	def remaining(self) -> int:
+		return max(0, self.limit - self.consumed)
+
+	@property
+	def is_complete(self) -> bool:
+		return self.consumed >= self.limit
 
 
 def insert_student_term_if_not_exists(
@@ -165,33 +192,116 @@ def get_all_terms_for_student_class(student_id, class_id):
 		return c.fetchall()
 
 
-def refresh_term_completion(term_id):
-	"""وضعیتِ تکمیلِ ترم را از روی شمارشِ حضور (حاضر+غایب) بازمحاسبه می‌کند (ADR-0005).
+def _resolve_session_limit(c, term_id):
+	"""سقفِ جلساتِ ترم با آبشارِ واحد: student_terms → pricing_profiles → تنظیمِ پیش‌فرض.
+
+	تنها محلِ حلِ سقفِ جلسات؛ پیش‌تر سه‌جای مختلف سه‌جور حل می‌کردند (تکمیل/کانفیگ/پرداخت)
+	و می‌توانستند بر سرِ سقف اختلاف پیدا کنند. `c` یک cursor باز است.
+	"""
+	from acasmart.data.repos.settings_repo import get_setting  # local to avoid cycles
+	c.execute("""
+		SELECT COALESCE(st.sessions_limit, pp.sessions_limit)
+		FROM student_terms st
+		LEFT JOIN pricing_profiles pp ON pp.id = st.profile_id
+		WHERE st.id = ?
+	""", (term_id,))
+	row = c.fetchone()
+	if row and row[0] is not None:
+		return int(row[0])
+	return int(get_setting("term_session_count", 12))
+
+
+def term_progress(term_id):
+	"""پیشرفتِ ترم را یک‌جا برمی‌گرداند (TermProgress) یا None اگر ترم نبود.
+
+	تنها منبعِ حقیقت برای «چند جلسه مصرف شده و آیا ترم تکمیل است». مصرف = حاضر+غایب (بی‌لغو).
+	"""
+	with get_connection() as conn:
+		c = conn.cursor()
+		c.execute("SELECT end_date FROM student_terms WHERE id = ?", (term_id,))
+		row = c.fetchone()
+		if not row:
+			return None
+		end_date = row[0]
+		limit = _resolve_session_limit(c, term_id)
+		c.execute("""
+			SELECT COUNT(*), MAX(date) FROM attendance
+			WHERE term_id = ? AND status != 'canceled'
+		""", (term_id,))
+		crow = c.fetchone()
+		return TermProgress(
+			term_id=term_id,
+			consumed=crow[0] or 0,
+			limit=limit,
+			last_date=crow[1],
+			end_date=end_date,
+		)
+
+
+def consumed(term_id):
+	"""جلساتِ مصرف‌شدهٔ ترم (حاضر + غایب). شکرِ رویِ term_progress."""
+	p = term_progress(term_id)
+	return p.consumed if p else 0
+
+
+def remaining(term_id):
+	"""جلساتِ باقی‌ماندهٔ ترم. شکرِ رویِ term_progress."""
+	p = term_progress(term_id)
+	return p.remaining if p else 0
+
+
+def consumed_by_terms(term_ids):
+	"""{term_id: مصرف‌شده} برای مجموعه‌ای از ترم‌ها — یک کوئریِ گروهی (برای گزارش‌ها).
+
+	همان قاعدهٔ «status != 'canceled'» را در یک‌جا نگه می‌دارد، بدونِ N+1.
+	"""
+	ids = list(term_ids)
+	if not ids:
+		return {}
+	placeholders = ",".join("?" * len(ids))
+	with get_connection() as conn:
+		c = conn.cursor()
+		c.execute(f"""
+			SELECT term_id, COUNT(*) FROM attendance
+			WHERE term_id IN ({placeholders}) AND status != 'canceled'
+			GROUP BY term_id
+		""", ids)
+		counts = {row[0]: row[1] for row in c.fetchall()}
+	return {tid: counts.get(tid, 0) for tid in ids}
+
+
+def _evaluate_completion(consumed_count, limit, last_date, current_end):
+	"""تصمیمِ تکمیل — تابعِ خالص، بدونِ DB. قابلِ تستِ مستقل.
+
+	خروجی: (is_complete, target_end). target_end همان end_date است که ترم «باید» داشته باشد،
+	بدونِ درنظرگرفتنِ قاعدهٔ «یک ترمِ فعال»:
+	  تکمیل   → last_date یا current_end
+	  ناتکمیل → None (باید دوباره باز شود)
+	"""
+	if consumed_count >= limit:
+		return True, (last_date or current_end)
+	return False, None
+
+
+def refresh_completion(term_id):
+	"""وضعیتِ تکمیلِ ترم را از روی شمارشِ حضور (حاضر+غایب) بازمحاسبه و ذخیره می‌کند (ADR-0005).
 
 	تکمیل یک «وضعیتِ مشتق‌شده» است، نه قفلِ یک‌طرفه:
 	- اگر جلسات مصرف‌شده (به‌جزِ لغوشده) به سقفِ ترم برسد → end_date = آخرین تاریخِ مصرف‌شده.
 	- در غیرِ این صورت → end_date = NULL (ترم دوباره فعال می‌شود و ویرایشِ گذشته ممکن می‌گردد).
 
-	برای حفظِ قاعدهٔ «یک ترمِ فعال» (آیتم ۶)، اگر بازکردنِ این ترم باعثِ وجودِ دو ترمِ فعال برای
+	برای حفظِ قاعدهٔ «یک ترمِ فعال»، اگر بازکردنِ این ترم باعثِ وجودِ دو ترمِ فعال برای
 	همان هنرجو/کلاس شود، end_date را NULL نمی‌کند و مارکر را نگه می‌دارد.
 	خروجی: True اگر ترم اکنون تکمیل‌شده است.
 	"""
-	from acasmart.data.repos.settings_repo import get_setting  # local to avoid cycles
 	with get_connection() as conn:
 		c = conn.cursor()
-		c.execute("""
-			SELECT student_id, class_id, sessions_limit, end_date
-			FROM student_terms WHERE id = ?
-		""", (term_id,))
+		c.execute("SELECT student_id, class_id, end_date FROM student_terms WHERE id = ?", (term_id,))
 		row = c.fetchone()
 		if not row:
 			return False
-		sid, cid, term_limit, current_end = row[0], row[1], row[2], row[3]
-		try:
-			term_limit = int(term_limit)
-		except (TypeError, ValueError):
-			term_limit = int(get_setting("term_session_count", 12))
-
+		sid, cid, current_end = row[0], row[1], row[2]
+		limit = _resolve_session_limit(c, term_id)
 		c.execute("""
 			SELECT COUNT(*), MAX(date) FROM attendance
 			WHERE term_id = ? AND status != 'canceled'
@@ -200,13 +310,13 @@ def refresh_term_completion(term_id):
 		total = crow[0] or 0
 		last_date = crow[1]
 
-		if total >= term_limit:
-			new_end = last_date or current_end
-			if current_end != new_end:
+		is_complete, target_end = _evaluate_completion(total, limit, last_date, current_end)
+		if is_complete:
+			if current_end != target_end:
 				c.execute("""
 					UPDATE student_terms SET end_date = ?, updated_at = datetime('now','localtime')
 					WHERE id = ?
-				""", (new_end, term_id))
+				""", (target_end, term_id))
 				conn.commit()
 			return True
 
@@ -223,11 +333,6 @@ def refresh_term_completion(term_id):
 				""", (term_id,))
 				conn.commit()
 		return False
-
-
-def recalc_term_end_by_id(term_id: int):
-	"""سازگاریِ به‌عقب: اکنون از refresh_term_completion (تکمیلِ دوطرفه) استفاده می‌کند."""
-	refresh_term_completion(term_id)
 
 
 def get_term_dates(term_id):
@@ -248,34 +353,6 @@ def get_term_tuition_by_id(term_id: int):
 		return int(row[0]) if row and row[0] is not None else None
 
 
-def get_term_sessions_limit_by_id(term_id: int):
-	"""
-	سقف جلسات ترم را برمی‌گرداند.
-	اول از student_terms.sessions_limit، اگر تهی بود از pricing_profiles.sessions_limit
-	و در نهایت از تنظیمات پیش‌فرض term_session_count.
-	"""
-	with get_connection() as conn:
-		c = conn.cursor()
-		c.execute("""
-			SELECT
-			  COALESCE(st.sessions_limit, pp.sessions_limit) AS lim
-			FROM student_terms st
-			LEFT JOIN pricing_profiles pp ON pp.id = st.profile_id
-			WHERE st.id = ?
-		""", (term_id,))
-		row = c.fetchone()
-		if row and row[0] is not None:
-			return int(row[0])
-	# fallback بیرون از DB (در خود PaymentManager هم دوباره fallback می‌کنیم)
-	return None
-
-
-def check_and_set_term_end_by_id(term_id, student_id, class_id, session_date):
-	"""سازگاریِ به‌عقب: اکنون از refresh_term_completion (تکمیلِ دوطرفه) استفاده می‌کند.
-	خروجی: True اگر ترم پس از این ثبت تکمیل شده باشد."""
-	return refresh_term_completion(term_id)
-
-
 def get_all_expired_terms():
 	with get_connection() as conn:
 		c = conn.cursor()
@@ -287,14 +364,3 @@ def get_all_expired_terms():
 			WHERE t.end_date IS NOT NULL
 		""")
 		return c.fetchall()
-
-
-def count_attendance_for_term(term_id):
-    """تعداد جلسات مصرف‌شدهٔ ترم (حاضر + غایب). جلسهٔ لغوشده شمرده نمی‌شود."""
-    with get_connection() as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT COUNT(*) FROM attendance
-            WHERE term_id = ? AND status != 'canceled'
-        """, (term_id,))
-        return c.fetchone()[0]

@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from acasmart.data.repos.attendance_repo import (
-    count_attendance,
     fetch_attendance_status_by_date,
     insert_attendance_with_date,
-    count_attendance_by_term,
     delete_attendance,
-    count_present_attendance_for_term,
 )
 from acasmart.data.repos.settings_repo import get_setting_bool
-from acasmart.data.repos.terms_repo import get_term_dates, recalc_term_end_by_id
+from acasmart.data.repos.terms_repo import get_term_dates, refresh_completion, term_progress, consumed
 from acasmart.data.repos.sessions_repo import (
     fetch_scheduled_students_for_class_on_date,
 )
@@ -20,7 +17,6 @@ from acasmart.data.repos.notifications_repo import (
     clear_renew_sms_sent,
 )
 from acasmart.data.repos.reports_repo import get_class_and_teacher_name
-from acasmart.data.repos.profiles_repo import get_term_config
 from acasmart.data.repos.students_repo import get_student_contact
 
 from PySide6.QtWidgets import (
@@ -199,12 +195,14 @@ class AttendanceManager(BaseSecondaryWindow):
             self.selected_class_id, selected_date, include_completed=show_completed
         )
         for sid, name, teacher, session_time, term_id in rows:
-            cfg = get_term_config(term_id)
-            term_limit = int(cfg.get("sessions_limit") or 12)
+            progress = term_progress(term_id)
+            if progress is None:
+                continue
+            term_limit = progress.limit
             notify_session_number = max(0, term_limit - 1)
 
             # شمارش کل ثبت‌ها برای همان ترم (حاضر + غایب)
-            done_total = count_attendance_by_term(sid, self.selected_class_id, term_id)
+            done_total = progress.consumed
 
             # وضعیت امروز: None (ثبت‌نشده) / 'present' / 'absent' / 'canceled'
             record_status = fetch_attendance_status_by_date(sid, self.selected_class_id, selected_date, term_id)
@@ -431,9 +429,10 @@ class AttendanceManager(BaseSecondaryWindow):
                     continue
 
                 # سقفِ همان ترم
-                cfg = get_term_config(term_id)
-                term_limit = int(cfg.get("sessions_limit") or 12)
-                notify_session_number = max(0, term_limit - 1)
+                progress = term_progress(term_id)
+                if progress is None:
+                    continue
+                notify_session_number = max(0, progress.limit - 1)
 
                 # فقط اگر یکی از چک‌باکس‌ها زده شده باشد ثبت کن
                 if present or absent:
@@ -446,7 +445,7 @@ class AttendanceManager(BaseSecondaryWindow):
                     )
 
                     # شمارش بعد از ثبت (کل: حاضر+غایب)
-                    total_after = count_attendance_by_term(sid, self.selected_class_id, term_id)
+                    total_after = consumed(term_id)
 
                     # اگر حالا «دقیقاً یک جلسه مانده» → SMS (و نه جلسه بعدی)
                     if (total_after == notify_session_number) and (not has_renew_sms_been_sent(sid, term_id)):
@@ -507,7 +506,7 @@ class AttendanceManager(BaseSecondaryWindow):
 
             # اگر با حذف، مجموع از limit کمتر شد و end_date قبلاً ست بود → بازش کن
             try:
-                recalc_term_end_by_id(term_id)
+                refresh_completion(term_id)
             except Exception:
                 pass
 

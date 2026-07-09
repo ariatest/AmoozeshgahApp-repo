@@ -195,10 +195,21 @@ def get_student_term_summary_rows(student_name='', teacher_name='', class_name='
 	cursor.execute(query, params)
 	terms = cursor.fetchall()
 
-	# گرفتن تنظیم سقف جلسات ترم
-	cursor.execute("SELECT value FROM settings WHERE key = 'term_session_count'")
-	row = cursor.fetchone()
-	session_limit = int(row[0]) if row else 12
+	# مصرف‌شده (حاضر+غایب) هر ترم — قاعده در terms_repo متمرکز است (بدون N+1)
+	from acasmart.data.repos.terms_repo import consumed_by_terms
+	term_ids = [t[0] for t in terms]
+	consumed_map = consumed_by_terms(term_ids)
+
+	# حاضرها (سنجهٔ جدا از مصرف‌شده) — یک کوئریِ گروهی
+	present_map = {}
+	if term_ids:
+		ph = ",".join("?" * len(term_ids))
+		cursor.execute(f"""
+			SELECT term_id, COUNT(*) FROM attendance
+			WHERE term_id IN ({ph}) AND status = 'present'
+			GROUP BY term_id
+		""", term_ids)
+		present_map = {r[0]: r[1] for r in cursor.fetchall()}
 
 	result = []
 	for term in terms:
@@ -208,16 +219,8 @@ def get_student_term_summary_rows(student_name='', teacher_name='', class_name='
 			start_date, end_date
 		) = term
 
-		# شمارش جلسات
-		cursor.execute("""
-			SELECT SUM(CASE WHEN status != 'canceled' THEN 1 ELSE 0 END),
-				   SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END)
-			FROM attendance
-			WHERE term_id = ?
-		""", (term_id,))
-		session_row = cursor.fetchone()
-		total_sessions = session_row[0] or 0   # مصرف‌شده = حاضر + غایب (بدون لغوشده)
-		present_sessions = session_row[1] or 0
+		total_sessions = consumed_map.get(term_id, 0)   # مصرف‌شده = حاضر + غایب (بدون لغوشده)
+		present_sessions = present_map.get(term_id, 0)
 		absent_sessions = total_sessions - present_sessions
 
 		result.append([
