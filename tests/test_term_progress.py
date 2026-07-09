@@ -85,12 +85,14 @@ class TestTermProgressValueObject(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 _SCHEMA = """
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE pricing_profiles (id INTEGER PRIMARY KEY, sessions_limit INTEGER);
+CREATE TABLE pricing_profiles (
+    id INTEGER PRIMARY KEY, sessions_limit INTEGER, tuition_fee INTEGER, currency_unit TEXT
+);
 CREATE TABLE student_terms (
     id INTEGER PRIMARY KEY,
     student_id INTEGER, class_id INTEGER,
     start_date TEXT, end_date TEXT,
-    sessions_limit INTEGER, profile_id INTEGER,
+    sessions_limit INTEGER, tuition_fee INTEGER, currency_unit TEXT, profile_id INTEGER,
     updated_at TEXT
 );
 CREATE TABLE attendance (

@@ -32,6 +32,19 @@ class TermProgress:
 		return self.consumed >= self.limit
 
 
+@dataclass(frozen=True)
+class TermConfig:
+	"""پیکربندیِ قیمت‌گذاریِ یک ترم: سقفِ جلسات، شهریه، واحدِ پول.
+
+	هر سه با آبشارِ واحد حل می‌شوند: snapshotِ ترم → pricing_profile → تنظیمِ پیش‌فرض.
+	جدا از TermProgress نگه داشته می‌شود (پیشرفت در برابرِ قیمت‌گذاری).
+	"""
+	term_id: int
+	sessions_limit: int
+	tuition_fee: int
+	currency_unit: str
+
+
 def insert_student_term_if_not_exists(
 	student_id, class_id, start_date, start_time,
 	sessions_limit=None, tuition_fee=None, currency_unit=None, profile_id=None,
@@ -192,23 +205,35 @@ def get_all_terms_for_student_class(student_id, class_id):
 		return c.fetchall()
 
 
-def _resolve_session_limit(c, term_id):
-	"""سقفِ جلساتِ ترم با آبشارِ واحد: student_terms → pricing_profiles → تنظیمِ پیش‌فرض.
+def _resolve_term_pricing(c, term_id):
+	"""قیمت‌گذاریِ ترم را با آبشارِ واحد حل می‌کند: student_terms → pricing_profiles → تنظیمِ پیش‌فرض.
 
-	تنها محلِ حلِ سقفِ جلسات؛ پیش‌تر سه‌جای مختلف سه‌جور حل می‌کردند (تکمیل/کانفیگ/پرداخت)
-	و می‌توانستند بر سرِ سقف اختلاف پیدا کنند. `c` یک cursor باز است.
+	تنها محلِ حلِ (سقفِ جلسات، شهریه، واحدِ پول)؛ پیش‌تر هرکدام در چند repo جدا و ناسازگار
+	حل می‌شدند. خروجی: (sessions_limit, tuition_fee, currency_unit). `c` یک cursor باز است.
 	"""
 	from acasmart.data.repos.settings_repo import get_setting  # local to avoid cycles
 	c.execute("""
-		SELECT COALESCE(st.sessions_limit, pp.sessions_limit)
+		SELECT COALESCE(st.sessions_limit, pp.sessions_limit),
+		       COALESCE(st.tuition_fee,    pp.tuition_fee),
+		       COALESCE(st.currency_unit,  pp.currency_unit)
 		FROM student_terms st
 		LEFT JOIN pricing_profiles pp ON pp.id = st.profile_id
 		WHERE st.id = ?
 	""", (term_id,))
 	row = c.fetchone()
-	if row and row[0] is not None:
-		return int(row[0])
-	return int(get_setting("term_session_count", 12))
+	limit, fee, unit = row if row else (None, None, None)
+	if limit is None:
+		limit = int(get_setting("term_session_count", 12))
+	if fee is None:
+		fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
+	if not unit:
+		unit = get_setting("currency_unit", "toman")
+	return int(limit), int(fee), unit
+
+
+def _resolve_session_limit(c, term_id):
+	"""سقفِ جلساتِ ترم — واگذار به آبشارِ واحدِ _resolve_term_pricing."""
+	return _resolve_term_pricing(c, term_id)[0]
 
 
 def term_progress(term_id):
@@ -236,6 +261,20 @@ def term_progress(term_id):
 			last_date=crow[1],
 			end_date=end_date,
 		)
+
+
+def term_config(term_id):
+	"""پیکربندیِ قیمت‌گذاریِ ترم (TermConfig) یا None اگر ترم نبود.
+
+	تنها منبعِ حقیقت برای «شهریه/سقف/واحدِ پولِ این ترم چیست». همان آبشارِ term_progress برای سقف.
+	"""
+	with get_connection() as conn:
+		c = conn.cursor()
+		c.execute("SELECT 1 FROM student_terms WHERE id = ?", (term_id,))
+		if c.fetchone() is None:
+			return None
+		limit, fee, unit = _resolve_term_pricing(c, term_id)
+		return TermConfig(term_id=term_id, sessions_limit=limit, tuition_fee=fee, currency_unit=unit)
 
 
 def consumed(term_id):
@@ -268,6 +307,29 @@ def consumed_by_terms(term_ids):
 		""", ids)
 		counts = {row[0]: row[1] for row in c.fetchall()}
 	return {tid: counts.get(tid, 0) for tid in ids}
+
+
+def tuition_by_terms(term_ids):
+	"""{term_id: شهریه} برای مجموعه‌ای از ترم‌ها — با همان آبشارِ واحد (برای گزارش‌های مالی).
+
+	یک کوئریِ گروهی (بدون N+1)؛ ترم‌هایی که snapshot و پروفایل هر دو تهی‌اند، از تنظیمِ پیش‌فرض پر می‌شوند.
+	"""
+	from acasmart.data.repos.settings_repo import get_setting  # local to avoid cycles
+	ids = list(term_ids)
+	if not ids:
+		return {}
+	placeholders = ",".join("?" * len(ids))
+	default_fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
+	with get_connection() as conn:
+		c = conn.cursor()
+		c.execute(f"""
+			SELECT st.id, COALESCE(st.tuition_fee, pp.tuition_fee)
+			FROM student_terms st
+			LEFT JOIN pricing_profiles pp ON pp.id = st.profile_id
+			WHERE st.id IN ({placeholders})
+		""", ids)
+		resolved = {row[0]: (int(row[1]) if row[1] is not None else default_fee) for row in c.fetchall()}
+	return {tid: resolved.get(tid, default_fee) for tid in ids}
 
 
 def _evaluate_completion(consumed_count, limit, last_date, current_end):
@@ -343,14 +405,6 @@ def get_term_dates(term_id):
 			WHERE id = ?
 		""", (term_id,))
 		return c.fetchone()
-
-
-def get_term_tuition_by_id(term_id: int):
-	with get_connection() as conn:
-		c = conn.cursor()
-		c.execute("SELECT tuition_fee FROM student_terms WHERE id= ?", (term_id,))
-		row = c.fetchone()
-		return int(row[0]) if row and row[0] is not None else None
 
 
 def get_all_expired_terms():

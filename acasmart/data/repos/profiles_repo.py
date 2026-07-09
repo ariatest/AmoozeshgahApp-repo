@@ -94,38 +94,6 @@ def apply_profile_to_term(term_id: int, profile_id: int):
 	return True
 
 
-def get_term_config_full(term_id: int):
-	"""
-	کانفیگ کامل ترم + اطلاعات پروفایل (اگر داشته باشد).
-	"""
-	with get_connection() as conn:
-		c = conn.cursor()
-		c.execute("""
-			SELECT st.sessions_limit, st.tuition_fee, st.currency_unit, st.profile_id,
-				   pp.name
-			FROM student_terms st
-			LEFT JOIN pricing_profiles pp ON pp.id = st.profile_id
-			WHERE st.id = ?
-		""", (term_id,))
-		row = c.fetchone()
-		if not row:
-			return None
-		sl, fee, unit, pid, pname = row
-		if sl is None:
-			sl = int(get_setting("term_session_count", 12))
-		if fee is None:
-			fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
-		if not unit:
-			unit = get_setting("currency_unit", "toman")
-		return {
-			"sessions_limit": sl,
-			"tuition_fee": fee,
-			"currency_unit": unit,
-			"profile_id": pid,
-			"profile_name": pname,
-		}
-
-
 def set_default_pricing_profile(profile_id: int):
 	"""تغییر پروفایل پیش‌فرض (اختیاری اما مفید برای UI تنظیمات)."""
 	with get_connection() as conn:

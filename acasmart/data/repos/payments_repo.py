@@ -13,14 +13,15 @@ def get_remaining_tuition_debt(term_id, exclude_payment_id=None):
 	"""
 	if term_id is None:
 		return None
+	from acasmart.data.repos.terms_repo import term_config
+	cfg = term_config(term_id)
+	if cfg is None:
+		from acasmart.data.repos.settings_repo import get_setting
+		term_fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
+	else:
+		term_fee = cfg.tuition_fee
 	with get_connection() as conn:
 		c = conn.cursor()
-		c.execute("SELECT COALESCE(tuition_fee, 0) FROM student_terms WHERE id = ?", (term_id,))
-		row = c.fetchone()
-		term_fee = row[0] if row else 0
-		if not term_fee:
-			from acasmart.data.repos.settings_repo import get_setting
-			term_fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))
 		query = "SELECT COALESCE(SUM(amount), 0) FROM payments WHERE term_id = ? AND payment_type = 'tuition'"
 		params = [term_id]
 		if exclude_payment_id is not None:
@@ -124,34 +125,34 @@ def delete_payment(payment_id):
 
 
 def get_terms_for_payment_management(student_id, class_id):
-	from acasmart.data.repos.settings_repo import get_setting
+	from acasmart.data.repos.terms_repo import tuition_by_terms
 	with get_connection() as conn:
 		c = conn.cursor()
 		c.execute(
 			"""
-			SELECT 
+			SELECT
 				t.id as term_id,
 				t.start_date,
 				t.end_date,
 				t.created_at,
 				COALESCE(SUM(CASE WHEN p.payment_type='tuition' THEN p.amount ELSE 0 END), 0) as paid_tuition,
 				COALESCE(SUM(CASE WHEN p.payment_type='extra' THEN p.amount ELSE 0 END), 0) as paid_extra,
-				COUNT(p.id) as payment_count,
-				COALESCE(t.tuition_fee, 0) as term_fee
+				COUNT(p.id) as payment_count
 			FROM student_terms t
 			LEFT JOIN payments p ON t.id = p.term_id
 			WHERE t.student_id = ? AND t.class_id = ?
-			GROUP BY t.id, t.start_date, t.end_date, t.created_at, t.tuition_fee
+			GROUP BY t.id, t.start_date, t.end_date, t.created_at
 			ORDER BY t.start_date DESC
 			""",
 			(student_id, class_id)
 		)
 		rows = c.fetchall()
 
+	# شهریهٔ هر ترم با آبشارِ واحد (snapshot → profile → تنظیم) — بدون N+1
+	fee_map = tuition_by_terms([r[0] for r in rows])
 	result = []
-	for (term_id, start_date, end_date, created_at, paid_tuition, paid_extra, payment_count, term_fee) in rows:
-		if not term_fee:
-			term_fee = int(get_setting("term_fee", get_setting("term_tuition", 6000000)))  # fallback
+	for (term_id, start_date, end_date, created_at, paid_tuition, paid_extra, payment_count) in rows:
+		term_fee = fee_map.get(term_id)
 		debt = term_fee - paid_tuition
 		status = "تسویه" if debt == 0 else "بدهکار" if debt > 0 else "خطا"
 		term_status = "فعال" if end_date is None else "تکمیل شده"
