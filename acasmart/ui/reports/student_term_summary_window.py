@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 from acasmart.data.repos.teachers_repo import fetch_teachers_simple
 from acasmart.data.repos.classes_repo import fetch_classes
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt
 
 import jdatetime
 from acasmart.ui.widgets.shamsi_date_picker import ShamsiDatePicker
@@ -43,8 +43,8 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
         for combo in (self.combo_teacher, self.combo_instrument, self.combo_class,
                       self.combo_day, self.combo_term_status):
             combo.currentIndexChanged.connect(apply)
-        self.date_from.button.clicked.connect(apply)
-        self.date_to.button.clicked.connect(apply)
+        self.date_from.dateChanged.connect(apply)
+        self.date_to.dateChanged.connect(apply)
 
     def create_filter_box(self):
         group = QGroupBox("فیلترها")
@@ -72,6 +72,9 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
 
         self.date_from = ShamsiDatePicker()
         self.date_to = ShamsiDatePicker()
+        # بدون تاریخِ پیش‌فرض؛ کاربر خودش بازهٔ دلخواه را انتخاب می‌کند
+        self.date_from.clear()
+        self.date_to.clear()
 
         self.combo_term_status = QComboBox()
         self.combo_term_status.addItems(["همه ترم‌ها", "فقط فعال", "فقط پایان یافته"])
@@ -162,8 +165,9 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
             if instrument_name == "همه": instrument_name = ""
             if day == "همه": day = ""
 
-            date_from = self.date_from.selected_shamsi.strip()
-            date_to = self.date_to.selected_shamsi.strip()
+            # تاریخ‌ها اختیاری‌اند: اگر انتخاب نشده باشند، رشتهٔ خالی یعنی بدون قیدِ تاریخ
+            date_from = self.date_from.selected_shamsi.strip() if self.date_from.has_date() else ""
+            date_to = self.date_to.selected_shamsi.strip() if self.date_to.has_date() else ""
 
             term_status = self.combo_term_status.currentText()
             if term_status == "فقط فعال":
@@ -232,10 +236,9 @@ class StudentTermSummaryWindow(BaseSecondaryWindow):
         self.load_data(apply_filters=False)
 
     def set_default_dates(self):
-        today = QDate.currentDate()
-        three_months_ago = today.addMonths(-3)
-        self.date_from.setDate(three_months_ago)
-        self.date_to.setDate(today)
+        # پیش‌فرض: بدون تاریخ (بازهٔ باز)
+        self.date_from.clear()
+        self.date_to.clear()
 
     def export_to_excel(self):
         today = jdatetime.date.today().strftime("%Y%m%d")

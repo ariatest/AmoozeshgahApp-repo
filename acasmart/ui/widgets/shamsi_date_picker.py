@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QHBoxLayout
 )
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, Signal
 
 from acasmart.ui.widgets.shamsi_date_popup import ShamsiDatePopup
 from acasmart.ui.widgets.theme_manager import ThemeManager
@@ -13,6 +13,9 @@ class ShamsiDatePicker(QWidget):
     دکمه‌ای دارد که با کلیک روی آن پنجره popup باز می‌شود.
     تاریخ‌ها در پس‌زمینه به فرمت شمسی و میلادی ذخیره می‌شوند.
     """
+
+    # سیگنالی که هنگام تغییر واقعی تاریخ (نه صرفِ باز شدن تقویم) صادر می‌شود
+    dateChanged = Signal()
 
     def __init__(self, label_text=""):
         super().__init__()
@@ -29,6 +32,8 @@ class ShamsiDatePicker(QWidget):
         # تاریخ پیش‌فرض: امروز (هم میلادی هم شمسی)
         self.selected_gregorian = QDate.currentDate()
         self.selected_shamsi = jdatetime.date.today().strftime("%Y-%m-%d")
+        # آیا کاربر تاریخی انتخاب کرده است؟ (برای حالتِ «بدون تاریخ» در فیلترها)
+        self._has_date = True
         # اتصال دکمه به باز شدن popup
         self.button.clicked.connect(self.open_calendar)
 
@@ -52,6 +57,8 @@ class ShamsiDatePicker(QWidget):
             self.selected_shamsi = popup.get_selected_date()
             self.selected_gregorian = popup.calendar.selectedDate()
             self.button.setText(self.selected_shamsi)
+            self._has_date = True
+            self.dateChanged.emit()
 
     def get_miladi_str(self):
         """
@@ -59,6 +66,18 @@ class ShamsiDatePicker(QWidget):
         """
 
         return self.selected_gregorian.toString("yyyy-MM-dd")
+
+    def has_date(self) -> bool:
+        """آیا تاریخی انتخاب شده است؟ (پس از clear() تا انتخاب بعدی نادرست است)"""
+        return self._has_date
+
+    def clear(self):
+        """پاک کردن انتخاب تاریخ؛ دکمه به حالتِ راهنما برمی‌گردد و فیلتر بدون قیدِ تاریخ می‌شود."""
+        self._has_date = False
+        self.selected_gregorian = QDate.currentDate()
+        self.selected_shamsi = jdatetime.date.today().strftime("%Y-%m-%d")
+        self.button.setText("📅 انتخاب تاریخ")
+        self.dateChanged.emit()
 
     def set_to_today(self):
         """
@@ -68,6 +87,8 @@ class ShamsiDatePicker(QWidget):
         self.selected_gregorian = QDate.currentDate()
         self.selected_shamsi = jdatetime.date.today().strftime("%Y-%m-%d")
         self.button.setText("📅 انتخاب تاریخ")
+        self._has_date = True
+        self.dateChanged.emit()
 
     def setDate(self, qdate: QDate):
         """
@@ -77,3 +98,5 @@ class ShamsiDatePicker(QWidget):
         g_date = date(qdate.year(), qdate.month(), qdate.day())
         self.selected_shamsi = jdatetime.date.fromgregorian(date=g_date).strftime("%Y-%m-%d")
         self.button.setText(self.selected_shamsi)
+        self._has_date = True
+        self.dateChanged.emit()

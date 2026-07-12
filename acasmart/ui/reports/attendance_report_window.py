@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QComboBox, QPushButton, QHBoxLayout, QFileDialog, QMessageBox
 )
 from acasmart.data.repos.classes_repo import fetch_classes
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from datetime import datetime
 import openpyxl
@@ -65,11 +65,9 @@ class AttendanceReportWindow(BaseSecondaryWindow):
 
         self.date_from_picker = ShamsiDatePicker(": از تاریخ ترم")
         self.date_to_picker = ShamsiDatePicker(": تا تاریخ ترم")
-
-        today = QDate.currentDate()
-        three_months_ago = today.addMonths(-3)
-        self.date_from_picker.setDate(three_months_ago)
-        self.date_to_picker.setDate(today)
+        # بدون تاریخِ پیش‌فرض؛ کاربر خودش بازهٔ دلخواه را انتخاب می‌کند
+        self.date_from_picker.clear()
+        self.date_to_picker.clear()
 
         filter_layout.addWidget(self.date_from_picker)
         filter_layout.addWidget(self.date_to_picker)
@@ -103,8 +101,8 @@ class AttendanceReportWindow(BaseSecondaryWindow):
         self.input_student_name.textChanged.connect(apply)
         for combo in (self.combo_teacher, self.combo_class, self.combo_term_status):
             combo.currentIndexChanged.connect(apply)
-        self.date_from_picker.button.clicked.connect(apply)
-        self.date_to_picker.button.clicked.connect(apply)
+        self.date_from_picker.dateChanged.connect(apply)
+        self.date_to_picker.dateChanged.connect(apply)
 
     def load_data(self):
         rows = get_attendance_report_rows()
@@ -136,8 +134,10 @@ class AttendanceReportWindow(BaseSecondaryWindow):
         teacher_filter = self.combo_teacher.currentData()
         class_filter = self.combo_class.currentData()
         term_status_filter = self.combo_term_status.currentData()
-        from_date = self.date_from_picker.get_miladi_str()
-        to_date = self.date_to_picker.get_miladi_str()
+        # تاریخ‌ها اختیاری‌اند: اگر انتخاب نشده باشند، قیدِ تاریخ اعمال نمی‌شود.
+        # مقایسه باید شمسی‌به‌شمسی باشد (تاریخِ ترم شمسی است) — selected_shamsi نه get_miladi_str
+        from_date = self.date_from_picker.selected_shamsi if self.date_from_picker.has_date() else None
+        to_date = self.date_to_picker.selected_shamsi if self.date_to_picker.has_date() else None
 
         filtered = []
 
@@ -152,7 +152,9 @@ class AttendanceReportWindow(BaseSecondaryWindow):
                 continue
             if term_status_filter == "finished" and not row['end_date']:
                 continue
-            if row['start_date'] > to_date or (row['end_date'] and row['end_date'] < from_date):
+            if to_date is not None and row['start_date'] > to_date:
+                continue
+            if from_date is not None and row['end_date'] and row['end_date'] < from_date:
                 continue
 
             filtered.append(row)
@@ -227,8 +229,8 @@ class AttendanceReportWindow(BaseSecondaryWindow):
         self.combo_class.setCurrentIndex(0)
         self.combo_term_status.setCurrentIndex(0)
 
-        self.date_from_picker.setDate(QDate.currentDate().addMonths(-3))
-        self.date_to_picker.setDate(QDate.currentDate())
+        self.date_from_picker.clear()
+        self.date_to_picker.clear()
 
         self.populate_table(self.all_data)
         self.status_label.setText(f"تعداد نتایج: {len(self.all_data)}")

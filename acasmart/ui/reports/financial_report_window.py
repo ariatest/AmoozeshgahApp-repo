@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QLineEdit, QComboBox, QPushButton, QFileDialog
 )
 from acasmart.data.repos.classes_repo import fetch_classes
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
 from acasmart.core.utils import format_currency_with_unit
@@ -35,8 +35,8 @@ class FinancialReportWindow(BaseSecondaryWindow):
     def __init__(self, return_target: QWidget | None = None):
         super().__init__("گزارش مالی هنرجویان", return_target)
         self.setGeometry(300, 200, 1400, 500)
-        self.all_data = []          # همه داده‌ها برای فیلترِ زنده
-        self.notes_by_term = {}     # {term_id: [(payment_type, amount, description)]}
+        self.all_data = []          # وضعیتِ ترم‌ها (شهریه/بدهی/وضعیت — مادام‌العمر)
+        self.payments_by_term = {}  # {term_id: [(payment_date, payment_type, amount, description)]}
         self.filtered_data = []
         self.build_ui()
 
@@ -65,9 +65,9 @@ class FinancialReportWindow(BaseSecondaryWindow):
         self.combo_status = QComboBox()
         self.combo_status.addItems(["همه وضعیت‌ها", "تسویه", "بدهکار"])
 
-        # فیلترِ نوعِ پرداخت — دامنهٔ مبالغ/توضیحاتِ نمایش‌داده‌شده را تعیین می‌کند (ردیف‌ها حذف نمی‌شوند)
-        self.combo_ptype = QComboBox()
-        self.combo_ptype.addItems(["همه پرداخت‌ها", "شهریه", "مازاد"])
+        # فیلترِ وضعیتِ ترم — نمایشِ ترم‌های فعال، تمام‌شده یا همه
+        self.combo_term_status = QComboBox()
+        self.combo_term_status.addItems(["همه ترم‌ها", "ترم فعال", "ترم تمام‌شده"])
 
         btn_clear = QPushButton("پاکسازی فیلتر")
         btn_clear.setProperty("variant", "secondary")
@@ -80,15 +80,16 @@ class FinancialReportWindow(BaseSecondaryWindow):
         filter_layout.addWidget(self.input_student_name)
         filter_layout.addWidget(self.combo_class)
         filter_layout.addWidget(self.combo_status)
-        filter_layout.addWidget(self.combo_ptype)
+        filter_layout.addWidget(self.combo_term_status)
         filter_layout.addWidget(btn_clear)
         filter_layout.addWidget(btn_export)
 
-        self.date_from_picker = ShamsiDatePicker(": از تاریخ")
+        # بازهٔ تاریخِ پرداخت — مبالغِ «پرداخت» بر اساسِ همین بازه محاسبه می‌شوند
+        self.date_from_picker = ShamsiDatePicker(": پرداخت از تاریخ")
         self.date_to_picker = ShamsiDatePicker(": تا تاریخ")
-        today = QDate.currentDate()
-        self.date_from_picker.setDate(today.addMonths(-3))
-        self.date_to_picker.setDate(today)
+        # بدون تاریخِ پیش‌فرض؛ کاربر خودش بازهٔ دلخواه را انتخاب می‌کند
+        self.date_from_picker.clear()
+        self.date_to_picker.clear()
         filter_layout.addWidget(self.date_from_picker)
         filter_layout.addWidget(self.date_to_picker)
 
@@ -111,7 +112,7 @@ class FinancialReportWindow(BaseSecondaryWindow):
 
         for w in (
             title, self.summary_label, self.input_student_name,
-            self.combo_class, self.combo_status, self.combo_ptype,
+            self.combo_class, self.combo_status, self.combo_term_status,
             btn_clear, btn_export, self.date_from_picker, self.date_to_picker, self.table,
         ):
             try:
@@ -126,33 +127,45 @@ class FinancialReportWindow(BaseSecondaryWindow):
         """فیلترِ زنده: هر تغییرِ ورودی بلافاصله اعمال می‌شود (بدون دکمهٔ «اعمال فیلتر»)."""
         apply = lambda *_: self.apply_filters()
         self.input_student_name.textChanged.connect(apply)
-        for combo in (self.combo_class, self.combo_status, self.combo_ptype):
+        for combo in (self.combo_class, self.combo_status, self.combo_term_status):
             combo.currentIndexChanged.connect(apply)
-        self.date_from_picker.button.clicked.connect(apply)
-        self.date_to_picker.button.clicked.connect(apply)
+        self.date_from_picker.dateChanged.connect(apply)
+        self.date_to_picker.dateChanged.connect(apply)
 
     def load_data(self):
         self.all_data = get_all_student_terms_with_financials()
-        self.notes_by_term = get_payments_with_notes_by_terms([r['term_id'] for r in self.all_data])
+        self.payments_by_term = get_payments_with_notes_by_terms([r['term_id'] for r in self.all_data])
         self.apply_filters()
 
-    def _notes_text(self, term_id):
-        """توضیحاتِ پرداخت‌های ترم، محدود به نوعِ انتخاب‌شده در فیلتر (شهریه/مازاد/همه)."""
-        sel = self.combo_ptype.currentText()
+    def _date_window(self):
+        """بازهٔ تاریخِ پرداخت (شمسی)؛ هر کران ممکن است None باشد یعنی بدونِ قید."""
+        frm = self.date_from_picker.selected_shamsi if self.date_from_picker.has_date() else None
+        to = self.date_to_picker.selected_shamsi if self.date_to_picker.has_date() else None
+        return frm, to
+
+    def _payments_in_window(self, term_id, frm, to):
+        """پرداخت‌های ترم که تاریخِ آن‌ها در بازهٔ انتخابی است (شمسی؛ مقایسهٔ رشته‌ای معتبر است)."""
+        out = []
+        for pdate, ptype, amount, desc in self.payments_by_term.get(term_id, []):
+            if frm is not None and pdate < frm:
+                continue
+            if to is not None and pdate > to:
+                continue
+            out.append((pdate, ptype, amount, desc))
+        return out
+
+    def _notes_text(self, payments):
+        """توضیحاتِ پرداخت‌های داده‌شده (شهریه و مازاد)."""
         label = {"tuition": "شهریه", "extra": "مازاد"}
         parts = []
-        for ptype, amount, desc in self.notes_by_term.get(term_id, []):
-            if sel == "شهریه" and ptype != "tuition":
-                continue
-            if sel == "مازاد" and ptype != "extra":
-                continue
+        for _pdate, ptype, amount, desc in payments:
             line = f"{label.get(ptype, ptype)}: {format_currency_with_unit(amount)}"
             if desc:
                 line += f" — {desc}"
             parts.append(line)
         return " | ".join(parts)
 
-    def populate_table(self, data):
+    def populate_table(self, data, window_active=False):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(data))
         total_tuition = total_paid = total_extra = total_debt = 0
@@ -165,18 +178,20 @@ class FinancialReportWindow(BaseSecondaryWindow):
             self.table.setItem(i, 4, QTableWidgetItem(row['start_date']))
             self.table.setItem(i, 5, QTableWidgetItem(row['end_date'] or "—"))
             self.table.setItem(i, 6, QTableWidgetItem(format_currency_with_unit(row['tuition'])))
-            self.table.setItem(i, 7, QTableWidgetItem(format_currency_with_unit(row['paid_tuition'])))
+            # پرداختِ شهریه — محدود به بازهٔ تاریخِ انتخاب‌شده
+            self.table.setItem(i, 7, QTableWidgetItem(format_currency_with_unit(row['paid_tuition_win'])))
 
-            # مازاد (زرد)
-            paid_extra = row.get('paid_extra', 0) or 0
+            # مازاد (زرد) — محدود به بازهٔ تاریخِ انتخاب‌شده
+            paid_extra = row['paid_extra_win']
             item_extra = QTableWidgetItem(format_currency_with_unit(paid_extra))
             item_extra.setBackground(_EXTRA_YELLOW)
             item_extra.setForeground(QColor("#5C3D00"))
             self.table.setItem(i, _COL_EXTRA, item_extra)
 
+            # بدهی و وضعیت مالی — وضعیتِ کلیِ ترم (مادام‌العمر)، مستقل از بازهٔ تاریخ
             self.table.setItem(i, 9, QTableWidgetItem(format_currency_with_unit(row['debt'])))
 
-            notes = self._notes_text(row['term_id'])
+            notes = row['notes']
             item_notes = QTableWidgetItem(notes)
             item_notes.setToolTip(notes)
             self.table.setItem(i, _COL_NOTES, item_notes)
@@ -192,28 +207,30 @@ class FinancialReportWindow(BaseSecondaryWindow):
             self.table.setItem(i, _COL_STATUS, item_status)
 
             total_tuition += row['tuition']
-            total_paid += row['paid_tuition']
+            total_paid += row['paid_tuition_win']
             total_extra += paid_extra
             total_debt += row['debt']
 
+        note = "   (پرداخت‌ها در بازهٔ تاریخِ انتخابی)" if window_active else ""
         self.summary_label.setText(
             f"تعداد ترم‌ها: {len(data)}   |   مجموع شهریه: {format_currency_with_unit(total_tuition)}"
             f"   |   مجموع پرداخت: {format_currency_with_unit(total_paid)}"
             f"   |   مجموع مازاد: {format_currency_with_unit(total_extra)}"
-            f"   |   مجموع بدهی: {format_currency_with_unit(total_debt)}"
+            f"   |   مجموع بدهی: {format_currency_with_unit(total_debt)}{note}"
         )
         self.table.setSortingEnabled(True)
         self.filtered_data = data
 
     def apply_filters(self):
-        # فیلترِ نوعِ پرداخت (combo_ptype) ردیف‌ها را حذف نمی‌کند؛ فقط توضیحاتِ نمایشی را محدود می‌کند.
         name_filter = self.input_student_name.text().strip()
         class_id = self.combo_class.currentData()
         status = self.combo_status.currentText()
-        from_date = self.date_from_picker.get_miladi_str()
-        to_date = self.date_to_picker.get_miladi_str()
+        term_status = self.combo_term_status.currentText()
+        # بازهٔ تاریخِ پرداخت — اختیاری؛ اگر فعال باشد، فقط درآمدِ همان بازه شمرده می‌شود
+        frm, to = self._date_window()
+        window_active = frm is not None or to is not None
 
-        filtered = []
+        display = []
         for row in self.all_data:
             if name_filter and name_filter not in row['student_name']:
                 continue
@@ -221,21 +238,34 @@ class FinancialReportWindow(BaseSecondaryWindow):
                 continue
             if status != "همه وضعیت‌ها" and row['status'] != status:
                 continue
-            term_start = row['start_date']
-            term_end = row['end_date'] or "2100-01-01"
-            if not (term_start <= to_date and term_end >= from_date):
+            # وضعیتِ ترم: فعال = بدون تاریخِ پایان، تمام‌شده = دارای تاریخِ پایان
+            is_active = not row['end_date']
+            if term_status == "ترم فعال" and not is_active:
                 continue
-            filtered.append(row)
+            if term_status == "ترم تمام‌شده" and is_active:
+                continue
 
-        self.populate_table(filtered)
+            pays = self._payments_in_window(row['term_id'], frm, to)
+            # حالتِ «درآمدِ دوره»: با بازهٔ فعال، فقط ترم‌هایی که در آن بازه پرداخت داشته‌اند نمایش داده می‌شوند
+            if window_active and not pays:
+                continue
+
+            display.append({
+                **row,
+                'paid_tuition_win': sum(a for _d, t, a, _de in pays if t == 'tuition'),
+                'paid_extra_win': sum(a for _d, t, a, _de in pays if t == 'extra'),
+                'notes': self._notes_text(pays),
+            })
+
+        self.populate_table(display, window_active)
 
     def reset_filters(self):
         self.input_student_name.clear()
         self.combo_class.setCurrentIndex(0)
         self.combo_status.setCurrentIndex(0)
-        self.combo_ptype.setCurrentIndex(0)
-        self.date_from_picker.setDate(QDate.currentDate().addMonths(-3))
-        self.date_to_picker.setDate(QDate.currentDate())
+        self.combo_term_status.setCurrentIndex(0)
+        self.date_from_picker.clear()
+        self.date_to_picker.clear()
         self.apply_filters()
 
     def export_to_excel(self):
@@ -260,10 +290,10 @@ class FinancialReportWindow(BaseSecondaryWindow):
             ws.cell(row=row_idx, column=5, value=row_data['start_date'])
             ws.cell(row=row_idx, column=6, value=row_data['end_date'] or "—")
             ws.cell(row=row_idx, column=7, value=row_data['tuition'])
-            ws.cell(row=row_idx, column=8, value=row_data['paid_tuition'])
-            ws.cell(row=row_idx, column=9, value=row_data.get('paid_extra', 0) or 0)
+            ws.cell(row=row_idx, column=8, value=row_data['paid_tuition_win'])
+            ws.cell(row=row_idx, column=9, value=row_data['paid_extra_win'])
             ws.cell(row=row_idx, column=10, value=row_data['debt'])
-            ws.cell(row=row_idx, column=11, value=self._notes_text(row_data['term_id']))
+            ws.cell(row=row_idx, column=11, value=row_data['notes'])
             ws.cell(row=row_idx, column=12, value=row_data['status'])
 
         wb.save(file_path)

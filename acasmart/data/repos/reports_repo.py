@@ -180,12 +180,15 @@ def get_student_term_summary_rows(student_name='', teacher_name='', class_name='
 	if day:
 		query += " AND c.day = ?"
 		params.append(day)
-	if date_from:
-		query += " AND st.start_date >= ?"
-		params.append(date_from)
+	# قیدِ تاریخ به‌صورتِ «هم‌پوشانیِ بازه»: ترم اگر بازهٔ [شروع، پایان]‌اش با بازهٔ انتخابی
+	# هم‌پوشانی داشته باشد نمایش داده می‌شود؛ ترمِ فعال (بدون پایان) بازِ باز فرض می‌شود.
+	# (هماهنگ با گزارشِ حضور و غیاب) — تاریخ‌ها شمسی‌اند و مقایسهٔ رشته‌ای معتبر است.
 	if date_to:
 		query += " AND st.start_date <= ?"
 		params.append(date_to)
+	if date_from:
+		query += " AND (st.end_date IS NULL OR st.end_date >= ?)"
+		params.append(date_from)
 	if term_status == "active":
 		query += " AND st.end_date IS NULL"
 	elif term_status == "finished":

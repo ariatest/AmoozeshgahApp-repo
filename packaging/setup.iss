@@ -1,6 +1,6 @@
 [Setup]
 AppName=Acasmart
-AppVersion=1.1.22
+AppVersion=1.1.23
 DefaultDirName={pf}\AcaSmart
 DefaultGroupName=AcaSmart
 OutputDir=dist

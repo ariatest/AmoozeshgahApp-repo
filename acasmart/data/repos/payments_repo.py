@@ -99,9 +99,11 @@ def fetch_payments(student_id=None, class_id=None, date_from=None, date_to=None,
 
 
 def get_payments_with_notes_by_terms(term_ids):
-	"""{term_id: [(payment_type, amount, description), ...]} — پرداخت‌های هر ترم برای ستونِ توضیحاتِ گزارش مالی.
+	"""{term_id: [(payment_date, payment_type, amount, description), ...]} — پرداخت‌های هر ترم.
 
-	یک کوئریِ گروهی (بدون N+1)؛ description تهی به رشتهٔ خالی نگاشته می‌شود.
+	مصرفِ گزارشِ مالی: هم برای ستونِ توضیحات و هم برای فیلتر/جمعِ مبلغ بر اساسِ تاریخِ پرداخت
+	(payment_date به‌صورتِ شمسیِ 'YYYY-MM-DD' ذخیره می‌شود). یک کوئریِ گروهی (بدون N+1)؛
+	description تهی به رشتهٔ خالی نگاشته می‌شود؛ خروجی به ترتیبِ تاریخِ پرداخت است.
 	"""
 	ids = list(term_ids)
 	if not ids:
@@ -110,14 +112,14 @@ def get_payments_with_notes_by_terms(term_ids):
 	with get_connection() as conn:
 		c = conn.cursor()
 		c.execute(f"""
-			SELECT term_id, payment_type, amount, COALESCE(description, '')
+			SELECT term_id, payment_date, payment_type, amount, COALESCE(description, '')
 			FROM payments
 			WHERE term_id IN ({placeholders})
 			ORDER BY payment_date
 		""", ids)
 		result = {}
-		for term_id, ptype, amount, desc in c.fetchall():
-			result.setdefault(term_id, []).append((ptype, amount, desc))
+		for term_id, pdate, ptype, amount, desc in c.fetchall():
+			result.setdefault(term_id, []).append((pdate, ptype, amount, desc))
 	return result
 
 
