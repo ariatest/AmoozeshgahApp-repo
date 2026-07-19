@@ -7,13 +7,14 @@ from acasmart.data.repos.profiles_repo import list_pricing_profiles, set_term_co
 from acasmart.data.repos.enrollment_repo import enroll, reschedule, fetch_enrollments_for_class, EnrollmentStatus
 from acasmart.data.repos.settings_repo import get_setting
 from acasmart.data.repos.students_repo import fetch_students_with_teachers
-from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student, get_term_pricing
+from acasmart.data.repos.terms_repo import get_last_term_end_date, get_term_id_by_student_and_class, get_active_term_count_per_student, get_term_pricing, refresh_completion
 from acasmart.core.schedule import first_on_or_after
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QListWidget, QListWidgetItem,
     QVBoxLayout, QTimeEdit, QMessageBox, QDialog,
-    QDialogButtonBox, QHBoxLayout, QComboBox, QRadioButton, QSpinBox
+    QDialogButtonBox, QHBoxLayout, QComboBox, QRadioButton, QSpinBox, QCheckBox
 )
+from PySide6.QtGui import QColor
 from PySide6.QtCore import QTime, Qt, QSize
 from acasmart.ui.widgets.shamsi_date_popup import ShamsiDatePopup
 from acasmart.ui.widgets.student_picker_popup import StudentPickerPopup
@@ -326,49 +327,77 @@ class EditEnrollmentDialog(QDialog):
 
 
 class FinishedTermsDialog(QDialog):
-    """فهرستِ ترم‌های پایان‌یافته با دکمهٔ «پاک‌کردن فهرست» در بالا (همیشه دیده می‌شود) و فهرستِ اسکرول‌شونده.
+    """فهرستِ ترم‌های پایان‌یافته با امکانِ «حذف موارد انتخاب‌شده» یا «پاک‌کردن کلِ فهرست».
 
-    خروجی: cleared == True اگر کاربر «پاک‌کردن فهرست» را زده باشد.
+    خروجی:
+      - cleared == True اگر کاربر «پاک‌کردن کل فهرست» را زده باشد (همهٔ ترم‌ها پنهان شوند).
+      - dismissed_term_ids: term_idهایی که کاربر تک‌تک از فهرست حذف کرده است.
+    حذف فقط از نما پنهان می‌کند؛ ترم و سابقهٔ آن حذف نمی‌شود.
     """
     def __init__(self, parent, rows):
         super().__init__(parent)
         self.setWindowTitle("ترم‌های پایان‌یافته")
         self.resize(560, 480)
         self.cleared = False
+        self.dismissed_term_ids = []
 
         lay = QVBoxLayout(self)
 
-        # نوار بالا: پاک‌کردن + بستن — بالای فهرست تا با بلندشدنِ فهرست هم دیده شوند
+        # نوار بالا: حذفِ انتخاب‌شده‌ها + پاک‌کردنِ کل + بستن — بالای فهرست تا همیشه دیده شوند
         top = QHBoxLayout()
-        self.btn_clear = QPushButton("🧹 پاک‌کردن فهرست")
+        self.btn_remove = QPushButton("🗑 حذف موارد انتخاب‌شده")
+        self.btn_remove.setProperty("variant", "secondary")
+        self.btn_remove.clicked.connect(self._on_remove_selected)
+        self.btn_clear = QPushButton("🧹 پاک‌کردن کل فهرست")
         self.btn_clear.setProperty("variant", "secondary")
         self.btn_clear.clicked.connect(self._on_clear)
         btn_close = QPushButton("بستن")
         btn_close.setProperty("variant", "ghost")
         btn_close.clicked.connect(self.reject)
+        top.addWidget(self.btn_remove)
         top.addWidget(self.btn_clear)
         top.addStretch(1)
         top.addWidget(btn_close)
         lay.addLayout(top)
 
-        lbl = QLabel("هنرجویان زیر ترم‌شان به پایان رسیده است:")
+        lbl = QLabel("هنرجویان زیر ترم‌شان به پایان رسیده است (برای حذف، کنارِ موارد تیک بزنید):")
         lbl.setProperty("sectionTitle", True)
         lay.addWidget(lbl)
 
-        # فهرستِ اسکرول‌شونده (QListWidget خودش اسکرول دارد)
+        # فهرستِ اسکرول‌شونده — هر ردیف یک چک‌باکس دارد تا انتخابِ چندتایی ساده باشد
         self.list = QListWidget()
         for (student_id, class_id, student_name, national_code,
              class_name, day, term_id, session_date, session_time) in rows:
-            self.list.addItem(
+            item = QListWidgetItem(
                 f"• {student_name} | کدملی: {national_code} | {class_name} ({day}) — {session_date} ساعت {session_time}"
             )
+            item.setData(Qt.UserRole, term_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked)
+            self.list.addItem(item)
         lay.addWidget(self.list)
 
-        for w in (self.btn_clear, btn_close):
+        for w in (self.btn_remove, self.btn_clear, btn_close):
             try:
                 ThemeManager.repolish(w)
             except Exception:
                 pass
+
+    def _on_remove_selected(self):
+        checked = [self.list.item(i) for i in range(self.list.count())
+                   if self.list.item(i).checkState() == Qt.Checked]
+        if not checked:
+            QMessageBox.information(self, "انتخابی نشده",
+                "ابتدا کنارِ یک یا چند مورد تیک بزنید.")
+            return
+        for item in checked:
+            tid = item.data(Qt.UserRole)
+            if tid is not None:
+                self.dismissed_term_ids.append(tid)
+            self.list.takeItem(self.list.row(item))
+        # اگر فهرست خالی شد، دیگر چیزی برای نمایش نیست
+        if self.list.count() == 0:
+            self.accept()
 
     def _on_clear(self):
         self.cleared = True
@@ -467,6 +496,10 @@ class SessionManager(BaseSecondaryWindow):
         lbl_sessions = QLabel("ثبت‌نام‌های این کلاس (برای ویرایش/حذف دوبار کلیک کنید):")
         lbl_sessions.setProperty("sectionTitle", True)
         layout.addWidget(lbl_sessions)
+        # نمایشِ ترم‌های تمام‌شده هم — تا بتوان شهریه/قیمت‌گذاریِ آن‌ها را هم ویرایش کرد
+        self.chk_show_finished = QCheckBox("نمایش ترم‌های تمام‌شده (برای ویرایش شهریه)")
+        self.chk_show_finished.toggled.connect(self.load_sessions)
+        layout.addWidget(self.chk_show_finished)
         self.list_sessions = QListWidget()
         self.list_sessions.setSortingEnabled(False) # Qt خودش با متن سورت نکند
         self.list_sessions.itemDoubleClicked.connect(self.edit_or_delete_session)
@@ -474,7 +507,7 @@ class SessionManager(BaseSecondaryWindow):
 
         # Apply theme/QSS to new widgets
         for w in (self.date_btn, self.btn_add_session, self.btn_clear, self.btn_notify_expired,
-                  self.student_btn, self.class_btn, self.list_sessions,
+                  self.student_btn, self.class_btn, self.list_sessions, self.chk_show_finished,
                   lbl_student, lbl_class, lbl_time, lbl_sessions):
             try:
                 ThemeManager.repolish(w)
@@ -515,6 +548,11 @@ class SessionManager(BaseSecondaryWindow):
             dismiss_finished_terms([r[6] for r in finished])  # r[6] = term_id
             QMessageBox.information(self, "انجام شد",
                 "فهرست ترم‌های پایان‌یافته پاک شد. (ترم‌ها و سابقهٔ آن‌ها حذف نشده‌اند.)")
+        elif dlg.dismissed_term_ids:
+            dismiss_finished_terms(dlg.dismissed_term_ids)
+            QMessageBox.information(self, "انجام شد",
+                f"{fa_digits(len(dlg.dismissed_term_ids))} مورد از فهرست حذف شد. "
+                "(ترم‌ها و سابقهٔ آن‌ها حذف نشده‌اند.)")
 
     def _format_finished_terms(self, rows):
         message = "هنرجویان زیر ترم‌شان به پایان رسیده است :\n"
@@ -698,13 +736,18 @@ class SessionManager(BaseSecondaryWindow):
         self.last_selected_date = self.selected_shamsi_date
 
     def load_sessions(self):
-        """Model-B: نمایش ثبت‌نام‌های فعالِ این کلاس (ترم‌ها) با نام هنرجو، ساعت و مدت جلسه."""
+        """Model-B: نمایش ثبت‌نام‌های این کلاس (ترم‌ها) با نام هنرجو، ساعت و مدت جلسه.
+
+        به‌طورِ پیش‌فرض فقط ترم‌های فعال؛ با تیکِ «نمایش ترم‌های تمام‌شده» ترم‌های
+        پایان‌یافته هم (با نشانِ ✓ تمام‌شده) نمایش داده می‌شوند تا شهریه‌شان قابلِ ویرایش باشد.
+        """
         self.list_sessions.setSortingEnabled(False)
         self.list_sessions.clear()
         if not self.selected_class_id:
             return
+        include_completed = self.chk_show_finished.isChecked()
         try:
-            rows = fetch_enrollments_for_class(self.selected_class_id)
+            rows = fetch_enrollments_for_class(self.selected_class_id, include_completed=include_completed)
         except Exception as e:
             QMessageBox.warning(self, "خطا", f"خطا در بارگذاری ثبت‌نام‌های این کلاس:\n{e}")
             return
@@ -712,12 +755,17 @@ class SessionManager(BaseSecondaryWindow):
             dur_label = "یک‌ساعته" if int(dur or 30) >= 60 else "۳۰ دقیقه"
             text = (f"{start_time} — {name} — {fa_digits(held)}/{fa_digits(limit)} جلسه "
                     f"({dur_label}، شروع {start_date})")
+            if end_date:
+                text = f"✓ تمام‌شده — {text}"
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, term_id)
             item.setData(Qt.UserRole + 1, student_id)
             item.setData(Qt.UserRole + 2, start_time)
             item.setData(Qt.UserRole + 3, int(dur or 30))
             item.setData(Qt.UserRole + 4, name)
+            item.setData(Qt.UserRole + 5, end_date)  # ترمِ تمام‌شده؟ (برای منطقِ ویرایش)
+            if end_date:
+                item.setForeground(QColor("#8A8A8A"))  # کم‌رنگ‌تر برای تمایزِ ترم تمام‌شده
             self.list_sessions.addItem(item)
 
     def edit_or_delete_session(self, item):
@@ -731,6 +779,7 @@ class SessionManager(BaseSecondaryWindow):
         cur_time = item.data(Qt.UserRole + 2)
         cur_dur = item.data(Qt.UserRole + 3)
         name = item.data(Qt.UserRole + 4)
+        is_finished = bool(item.data(Qt.UserRole + 5))
         if term_id is None or student_id is None:
             return
 
@@ -743,26 +792,36 @@ class SessionManager(BaseSecondaryWindow):
             return
 
         if dlg.action == EditEnrollmentDialog.SAVE:
-            # ۱) ساعت/مدت (با بررسی تداخل)
-            result = reschedule(term_id, dlg.new_time, dlg.new_duration)
-            if not result.ok:
-                if result.status == EnrollmentStatus.TEACHER_CONFLICT:
-                    QMessageBox.warning(self, "تداخل زمانی",
-                        "این ساعت با برنامهٔ هفتگیِ استادِ این کلاس تداخل دارد.")
-                elif result.status == EnrollmentStatus.STUDENT_CONFLICT:
-                    QMessageBox.warning(self, "تداخل زمانی",
-                        "این ساعت با یکی دیگر از ترم‌های فعالِ همین هنرجو تداخل دارد.")
-                else:
-                    QMessageBox.warning(self, "خطا", "ثبت‌نام برای ویرایش پیدا نشد.")
-                return
-            # ۲) قیمت‌گذاری (همیشه قابلِ ویرایش — حتی با وجودِ سابقهٔ پرداخت/حضور)
+            # ۱) ساعت/مدت — فقط اگر واقعاً تغییر کرده باشد بررسیِ تداخل و reschedule انجام شود.
+            # این‌طوری ویرایشِ فقط‌شهریه (به‌ویژه روی ترمِ تمام‌شده) با تداخلِ یک ترمِ فعالِ
+            # بعدی مسدود نمی‌شود.
+            _new_qt = QTime.fromString(str(dlg.new_time), "HH:mm")
+            _cur_qt = QTime.fromString(str(cur_time), "HH:mm")
+            time_changed = _new_qt.isValid() and _cur_qt.isValid() and _new_qt != _cur_qt
+            dur_changed = int(dlg.new_duration) != int(cur_dur or 30)
+            if time_changed or dur_changed:
+                result = reschedule(term_id, dlg.new_time, dlg.new_duration)
+                if not result.ok:
+                    if result.status == EnrollmentStatus.TEACHER_CONFLICT:
+                        QMessageBox.warning(self, "تداخل زمانی",
+                            "این ساعت با برنامهٔ هفتگیِ استادِ این کلاس تداخل دارد.")
+                    elif result.status == EnrollmentStatus.STUDENT_CONFLICT:
+                        QMessageBox.warning(self, "تداخل زمانی",
+                            "این ساعت با یکی دیگر از ترم‌های فعالِ همین هنرجو تداخل دارد.")
+                    else:
+                        QMessageBox.warning(self, "خطا", "ثبت‌نام برای ویرایش پیدا نشد.")
+                    return
+            # ۲) قیمت‌گذاری (همیشه قابلِ ویرایش — حتی با وجودِ سابقهٔ پرداخت/حضور یا ترمِ تمام‌شده)
             pr = dlg.get_pricing()
             if pr.get("profile_id") is not None:
                 apply_profile_to_term(term_id, pr["profile_id"])
             else:
                 set_term_config(term_id, sessions_limit=pr["sessions_limit"],
                                 tuition_fee=pr["tuition_fee"], currency_unit=pr["currency_unit"], profile_id=None)
-            QMessageBox.information(self, "موفق", f"ثبت‌نام به‌روزرسانی شد (ساعت: {dlg.new_time}).")
+            # ۳) تغییرِ سقفِ جلسات می‌تواند وضعیتِ تکمیل را عوض کند (دوطرفه):
+            # بالابردنِ سقف روی ترمِ تمام‌شده آن را دوباره فعال می‌کند، پایین‌آوردن آن را می‌بندد.
+            refresh_completion(term_id)
+            QMessageBox.information(self, "موفق", "ثبت‌نام به‌روزرسانی شد.")
         elif dlg.action == EditEnrollmentDialog.DELETE:
             reply = QMessageBox.question(self, "حذف ثبت‌نام", "آیا این ثبت‌نام (ترم) حذف شود؟",
                                          QMessageBox.Yes | QMessageBox.No)
