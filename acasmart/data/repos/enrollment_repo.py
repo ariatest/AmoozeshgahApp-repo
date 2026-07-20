@@ -149,13 +149,15 @@ def enroll(student_id, class_id, start_date, start_time,
 			return EnrollmentResult(EnrollmentStatus.DUPLICATE_ACTIVE)
 
 
-def reschedule(term_id, new_start_time, new_duration=None):
-	"""Model-B: change an active enrollment's weekly time (and optionally lesson duration).
+def reschedule(term_id, new_start_time, new_duration=None, new_start_date=None):
+	"""Model-B: change an active enrollment's weekly time (and optionally lesson duration / start_date).
 
-	Only the time-of-day changes — the weekday and start_date are untouched (the class day
-	is unchanged), so the computed weekly occurrences simply shift to the new time. Re-runs
-	interval-aware teacher/student conflict detection, excluding this Term itself. Returns
-	an EnrollmentResult (UPDATED, or a precise TEACHER_CONFLICT / STUDENT_CONFLICT / NOT_FOUND).
+	The time-of-day changes and — when new_start_date is given — the term's start_date too.
+	new_start_date must already be snapped onto the class weekday by the caller (same convention
+	as enroll), so the computed weekly occurrences keep landing on the class day. The weekday
+	itself never changes. Re-runs interval-aware teacher/student conflict detection, excluding
+	this Term itself. Returns an EnrollmentResult (UPDATED, or a precise
+	TEACHER_CONFLICT / STUDENT_CONFLICT / NOT_FOUND).
 	"""
 	with get_connection() as conn:
 		c = conn.cursor()
@@ -173,12 +175,20 @@ def reschedule(term_id, new_start_time, new_duration=None):
 		if _has_student_schedule_conflict(student_id, class_id, new_start_time, new_duration=eff_dur, exclude_term_id=term_id):
 			return EnrollmentResult(EnrollmentStatus.STUDENT_CONFLICT)
 
-		c.execute(
-			"""UPDATE student_terms
-			      SET start_time = ?, lesson_duration = ?, updated_at = datetime('now','localtime')
-			    WHERE id = ?""",
-			(new_start_time, eff_dur, term_id),
-		)
+		if new_start_date is not None:
+			c.execute(
+				"""UPDATE student_terms
+				      SET start_date = ?, start_time = ?, lesson_duration = ?, updated_at = datetime('now','localtime')
+				    WHERE id = ?""",
+				(new_start_date, new_start_time, eff_dur, term_id),
+			)
+		else:
+			c.execute(
+				"""UPDATE student_terms
+				      SET start_time = ?, lesson_duration = ?, updated_at = datetime('now','localtime')
+				    WHERE id = ?""",
+				(new_start_time, eff_dur, term_id),
+			)
 		conn.commit()
 		return EnrollmentResult(EnrollmentStatus.UPDATED, term_id)
 

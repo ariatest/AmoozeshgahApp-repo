@@ -15,8 +15,9 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QHBoxLayout, QComboBox, QRadioButton, QSpinBox, QCheckBox
 )
 from PySide6.QtGui import QColor
-from PySide6.QtCore import QTime, Qt, QSize
+from PySide6.QtCore import QTime, Qt, QSize, QDate
 from acasmart.ui.widgets.shamsi_date_popup import ShamsiDatePopup
+from acasmart.ui.widgets.shamsi_date_picker import ShamsiDatePicker
 from acasmart.ui.widgets.student_picker_popup import StudentPickerPopup
 from acasmart.ui.widgets.class_picker_popup import ClassPickerPopup
 import jdatetime
@@ -169,12 +170,14 @@ class EditEnrollmentDialog(QDialog):
     DELETE = 2
 
     def __init__(self, parent, student_name, class_start_time, current_time, current_duration,
-                 current_sessions=None, current_fee_toman=None, current_profile_id=None):
+                 current_sessions=None, current_fee_toman=None, current_profile_id=None,
+                 current_start_date=None):
         super().__init__(parent)
         self.setWindowTitle("ویرایش ثبت‌نام")
         self.action = None
         self.new_time = None
         self.new_duration = None
+        self.new_start_date = None
         self._class_start_time = class_start_time
 
         lay = QVBoxLayout(self)
@@ -201,6 +204,16 @@ class EditEnrollmentDialog(QDialog):
         self.combo_duration.setCurrentIndex(1 if int(current_duration or 30) >= 60 else 0)
         row_d.addWidget(self.combo_duration)
         lay.addLayout(row_d)
+
+        # تاریخِ شروعِ ترم — قابلِ ویرایش (روی روزِ کلاس snap می‌شود)
+        self.date_start = ShamsiDatePicker("تاریخ شروع ترم:")
+        if current_start_date:
+            try:
+                g = jdatetime.date.fromisoformat(current_start_date).togregorian()
+                self.date_start.setDate(QDate(g.year, g.month, g.day))
+            except Exception:
+                pass
+        lay.addWidget(self.date_start)
 
         # --- قیمت‌گذاری (پروفایل/سفارشی) — همیشه قابلِ ویرایش ---
         self.ui_unit = currency_label()
@@ -300,6 +313,7 @@ class EditEnrollmentDialog(QDialog):
         self.action = self.SAVE
         self.new_time = new_time
         self.new_duration = int(self.combo_duration.currentData())
+        self.new_start_date = self.date_start.selected_shamsi if self.date_start.has_date() else None
         self.accept()
 
     def _on_delete(self):
@@ -764,6 +778,7 @@ class SessionManager(BaseSecondaryWindow):
             item.setData(Qt.UserRole + 3, int(dur or 30))
             item.setData(Qt.UserRole + 4, name)
             item.setData(Qt.UserRole + 5, end_date)  # ترمِ تمام‌شده؟ (برای منطقِ ویرایش)
+            item.setData(Qt.UserRole + 6, start_date)  # برای پیش‌پرکردن/مقایسهٔ تاریخِ شروع در ویرایش
             if end_date:
                 item.setForeground(QColor("#8A8A8A"))  # کم‌رنگ‌تر برای تمایزِ ترم تمام‌شده
             self.list_sessions.addItem(item)
@@ -780,27 +795,32 @@ class SessionManager(BaseSecondaryWindow):
         cur_dur = item.data(Qt.UserRole + 3)
         name = item.data(Qt.UserRole + 4)
         is_finished = bool(item.data(Qt.UserRole + 5))
+        cur_start_date = item.data(Qt.UserRole + 6)
         if term_id is None or student_id is None:
             return
 
-        _class_day, class_start_time = get_day_and_time_for_class(self.selected_class_id)
+        class_day, class_start_time = get_day_and_time_for_class(self.selected_class_id)
         pricing = get_term_pricing(term_id)  # (sessions_limit, tuition_fee, currency_unit, profile_id) یا None
         cur_sl, cur_fee, _cur_unit, cur_pid = pricing if pricing else (None, None, None, None)
         dlg = EditEnrollmentDialog(self, name, class_start_time, cur_time, cur_dur,
-                                   current_sessions=cur_sl, current_fee_toman=cur_fee, current_profile_id=cur_pid)
+                                   current_sessions=cur_sl, current_fee_toman=cur_fee, current_profile_id=cur_pid,
+                                   current_start_date=cur_start_date)
         if dlg.exec_() != QDialog.Accepted:
             return
 
         if dlg.action == EditEnrollmentDialog.SAVE:
-            # ۱) ساعت/مدت — فقط اگر واقعاً تغییر کرده باشد بررسیِ تداخل و reschedule انجام شود.
+            # ۱) ساعت/مدت/تاریخِ شروع — فقط اگر واقعاً تغییر کرده باشد بررسیِ تداخل و reschedule انجام شود.
             # این‌طوری ویرایشِ فقط‌شهریه (به‌ویژه روی ترمِ تمام‌شده) با تداخلِ یک ترمِ فعالِ
-            # بعدی مسدود نمی‌شود.
+            # بعدی مسدود نمی‌شود. تاریخِ شروع روی روزِ کلاس snap می‌شود (مثل ثبت‌نام).
             _new_qt = QTime.fromString(str(dlg.new_time), "HH:mm")
             _cur_qt = QTime.fromString(str(cur_time), "HH:mm")
             time_changed = _new_qt.isValid() and _cur_qt.isValid() and _new_qt != _cur_qt
             dur_changed = int(dlg.new_duration) != int(cur_dur or 30)
-            if time_changed or dur_changed:
-                result = reschedule(term_id, dlg.new_time, dlg.new_duration)
+            snapped_start = first_on_or_after(dlg.new_start_date, class_day) if dlg.new_start_date else None
+            date_changed = snapped_start is not None and snapped_start != cur_start_date
+            if time_changed or dur_changed or date_changed:
+                result = reschedule(term_id, dlg.new_time, dlg.new_duration,
+                                    new_start_date=snapped_start if date_changed else None)
                 if not result.ok:
                     if result.status == EnrollmentStatus.TEACHER_CONFLICT:
                         QMessageBox.warning(self, "تداخل زمانی",
