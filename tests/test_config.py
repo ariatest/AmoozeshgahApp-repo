@@ -11,7 +11,8 @@ import unittest
 
 import acasmart.core.config as config
 
-_KEYS = ("ADMIN_MOBILE", "ADMIN_PASSWORD", "IPPANEL_API_KEY", "IPPANEL_FROM_NUMBER", "IPPANEL_PATTERN_CODE")
+_KEYS = ("ADMIN_MOBILE", "ADMIN_PASSWORD", "IPPANEL_API_KEY", "IPPANEL_FROM_NUMBER",
+         "IPPANEL_PATTERN_CODE_1", "IPPANEL_PATTERN_CODE_2")
 
 
 class TestConfig(unittest.TestCase):
@@ -37,12 +38,14 @@ class TestConfig(unittest.TestCase):
 
     def test_accessors_read_the_right_keys(self):
         self._set(ADMIN_MOBILE="09120000000", ADMIN_PASSWORD="secret",
-                  IPPANEL_API_KEY="key", IPPANEL_FROM_NUMBER="from", IPPANEL_PATTERN_CODE="pat")
+                  IPPANEL_API_KEY="key", IPPANEL_FROM_NUMBER="from",
+                  IPPANEL_PATTERN_CODE_1="pat1", IPPANEL_PATTERN_CODE_2="pat2")
         self.assertEqual(config.admin_mobile(), "09120000000")
         self.assertEqual(config.admin_password(), "secret")
         self.assertEqual(config.ippanel_api_key(), "key")
         self.assertEqual(config.ippanel_from_number(), "from")
-        self.assertEqual(config.ippanel_pattern_code(), "pat")
+        self.assertEqual(config.ippanel_pattern_code_reminder(), "pat1")
+        self.assertEqual(config.ippanel_pattern_code_invitation(), "pat2")
 
     def test_admin_strips_and_defaults_empty(self):
         self._set(ADMIN_MOBILE="  0912  ", ADMIN_PASSWORD=None)

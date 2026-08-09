@@ -3,10 +3,11 @@ from __future__ import annotations
 from acasmart.data.repos.students_repo import fetch_students, get_student_contact
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
-    QCheckBox, QMessageBox, QHBoxLayout
+    QCheckBox, QMessageBox, QHBoxLayout, QApplication
 )
 from PySide6.QtCore import Qt
-from acasmart.services.sms_notifier import SmsNotifier
+from PySide6.QtGui import QCursor
+from acasmart.services.sms_notifier import SmsNotifier, SmsStatus
 from acasmart.ui.widgets.theme_manager import ThemeManager
 from acasmart.ui.widgets.base_secondary_window import BaseSecondaryWindow
 
@@ -97,17 +98,43 @@ class SmsNotificationWindow(BaseSecondaryWindow):
             QMessageBox.warning(self, "هیچ انتخابی", "لطفاً حداقل یک هنرجو را انتخاب کنید.")
             return
 
-        count = 0
-        for cb in selected:
-            student_id = cb.property("student_id")
-            name, phone = self.get_student_contact(student_id)
-            if name and phone:
+        # اگر ارسالِ پیامک در تنظیمات خاموش است، همین‌جا شفاف بگو (به‌جای «۰ ارسال شد»)
+        if not self.notifier.is_enabled():
+            QMessageBox.information(self, "ارسال پیامک غیرفعال است",
+                "ارسال پیامک در تنظیماتِ برنامه غیرفعال است. ابتدا آن را فعال کنید.")
+            return
+
+        # نکتهٔ حیاتی: تمامِ عملیات درونِ try/finally است تا هیچ استثنائی از این اسلات فرار نکند
+        # (فرارِ استثناء از یک اسلاتِ Qt در نسخهٔ بسته‌بندی‌شده باعثِ بسته‌شدن/هنگِ برنامه می‌شود)،
+        # و شبکه با timeout فراخوانی می‌شود تا رابطِ کاربری هیچ‌وقت برای همیشه بلاک نشود.
+        self.btn_send_sms.setEnabled(False)
+        QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+        sent = failed = 0
+        try:
+            for cb in selected:
+                student_id = cb.property("student_id")
                 try:
-                    self.notifier.send_renew_term_notification(name, phone, "شما")
-                    count += 1
+                    name, phone = self.get_student_contact(student_id)
+                    if not (name and phone):
+                        failed += 1
+                        continue
+                    result = self.notifier.send_new_term_invitation(name, phone)
+                    status = result.get("status") if isinstance(result, dict) else None
+                    if status == SmsStatus.SENT:
+                        sent += 1
+                    else:
+                        failed += 1
                 except Exception as e:
-                    print(e)
-        QMessageBox.information(self, "پایان عملیات", f"ارسال پیامک برای {count} هنرجو انجام شد.")
+                    failed += 1
+                    self.notifier._log(f"[SMS ERROR] ارسال دستی ناموفق (student_id={student_id}): {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.btn_send_sms.setEnabled(True)
+
+        msg = f"ارسال پیامک برای {sent} هنرجو انجام شد."
+        if failed:
+            msg += f"\n{failed} مورد ناموفق بود (برای جزئیات به فایل لاگ مراجعه کنید)."
+        QMessageBox.information(self, "پایان عملیات", msg)
 
     def get_student_contact(self, student_id):
         return get_student_contact(student_id)

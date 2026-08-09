@@ -22,7 +22,9 @@ python -m acasmart
 
 The app requires a `.env` file at the repo root with:
 - `ADMIN_MOBILE`, `ADMIN_PASSWORD` — login credentials
-- `IPPANEL_API_KEY`, `IPPANEL_FROM_NUMBER`, `IPPANEL_PATTERN_CODE` — SMS gateway
+- `IPPANEL_API_KEY`, `IPPANEL_FROM_NUMBER` — SMS gateway
+- `IPPANEL_PATTERN_CODE_1` — pattern for the automatic "one session left" renewal reminder (attendance flow; params `student_name`, `class_name`)
+- `IPPANEL_PATTERN_CODE_2` — pattern for the manual bulk "register for a new term" SMS (send-SMS window; param `student_name`)
 
 There are no tests and no linter configured. Sanity-check edits with `python -m compileall -q acasmart`.
 

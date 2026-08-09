@@ -56,5 +56,11 @@ def ippanel_from_number():
 	return _get("IPPANEL_FROM_NUMBER")
 
 
-def ippanel_pattern_code():
-	return _get("IPPANEL_PATTERN_CODE")
+def ippanel_pattern_code_reminder():
+	"""Pattern for the automatic 'one session left' renewal reminder (attendance flow)."""
+	return _get("IPPANEL_PATTERN_CODE_1")
+
+
+def ippanel_pattern_code_invitation():
+	"""Pattern for the manual bulk 'register for a new term' SMS (send-SMS window)."""
+	return _get("IPPANEL_PATTERN_CODE_2")
